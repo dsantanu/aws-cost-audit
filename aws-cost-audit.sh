@@ -3,7 +3,7 @@
 # AWS Cost Optimization Data Collection Pack
 # ==========================================================
 # Name   : AWS Cost Audit
-# Version: v2.0.0
+# Version: v2.1.0
 # Author : Santanu Das (@dsantanu)
 # License: MIT
 # Desc   : Collects data for AWS cost and usage analysis
@@ -325,7 +325,7 @@ echo "🌐 Elastic IP monthly cost: ${EIP_COST} USD  |  Total: ${EIP_TOTAL}  |  
 # =========================================
 if [[ -n "${OUTFILE}" ]]; then
   echo "📦 Packaging results into: ${OUTDIR%/}/${OUTFILE}"
-  tar -czf "${OUTDIR%/}/${OUTFILE}" -C "${OUTDIR}" .
+  tar -czf "${OUTFILE}" "${OUTDIR}"
   echo "✅ Archive ready: ${OUTDIR%/}/${OUTFILE}"
 fi
 
