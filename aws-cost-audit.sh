@@ -3,37 +3,78 @@
 # AWS Cost Optimization Data Collection Pack
 # ==========================================================
 # Name   : AWS Cost Audit
-# Version: v1.0.1
+# Version: v2.0.0
 # Author : Santanu Das (@dsantanu)
 # License: MIT
 # Desc   : Collects data for AWS cost and usage analysis
 # ==========================================================
-
 set -euo pipefail
 
-# --- Setup
-ROOTDIR=~/Downloads/rst-aws-cost-audit
-OUTDIR="${ROOTDIR}/outputs-$(date +%Y-%m-%d)"
+# ==========================================================
+# 🧠 CLI Argument Parser (v3)
+# ==========================================================
+
+AWS_PROFILE="default"
+OUTDIR="./outputs-$(date +%Y-%m-%d)"
+REPORT_ONLY=false
+OUTFILE="aws-cost-audit-$(date +%Y%m%d).tgz"
+
+show_help() {
+cat <<'EOF'
+🧾 AWS Cost Audit Script (v3)
+Usage: $(basename "$0") [options]
+
+Options:
+  -p, --profile <name>   AWS CLI profile [default: default]
+  -o, --outfile <file>   Output tar.gz filename
+                         [default: aws-cost-audit-YYYYMMDD.tar.gz]
+  -d, --dest <dir>       Output directory [default: ./]
+  -r, --report           Only run the report generation step (skip collectors)
+  -h, --help             Show this help message and exit
+EOF
+}
+
+# Parse arguments
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    -p|--profile) AWS_PROFILE="$2"; shift 2;;
+    -o|--outfile) OUTFILE="$2";     shift 2;;
+    -d|--dest)    OUTDIR="$2";      shift 2;;
+    -r|--report)  REPORT_ONLY=true; shift ;;
+    -h|--help)    show_help; exit 0;;
+    *) echo "⚠️ Unknown option: $1"; show_help; exit 1;;
+  esac
+done
+
+export AWS_PROFILE
 mkdir -p "${OUTDIR}"
-#cd "${OUTDIR}"
 
-echo "📦 Output directory: ${OUTDIR}"
+echo "👤 Using AWS profile: ${AWS_PROFILE}"
+echo "📁 Output directory: ${OUTDIR}"
+echo "📦 Archive name: ${OUTFILE}"
+echo "📊 Report-only mode: ${REPORT_ONLY}"
 
-# --- Helper: macOS date workaround
+# When report-only is requested, stub AWS CLI to no-op so collectors are skipped
+if [[ "$REPORT_ONLY" == true ]]; then
+  echo "📈 Report-only: skipping AWS collection calls..."
+  aws() { command aws --profile "${AWS_PROFILE}" "$@" >/dev/null 2>&1 || true; }
+fi
+
+# Ensure date handling remains cross-platform (macOS/Linux)
 if [[ $(uname -s) == 'Darwin' ]]; then
-  echo "🍎 macOS detected — using BSD-compatible date options"
-  dt_1m='-v -1m'
-  dt_7d='-u -v -7d'
+    echo "🍎 macOS detected — using BSD-compatible date options"
+    dt_1m='-v -1m'
+    dt_7d='-u -v -7d'
 elif [[ $(uname -s) == 'Linux' ]]; then
-  echo "🐧 Linux detected — using GNU date options"
-  dt_1m='-d "1 month ago"'
-  dt_7d='-u -d "7 days ago"'
+    echo "🐧 Linux detected — using GNU date options"
+    dt_1m='-d "1 month ago"'
+    dt_7d='-u -d "7 days ago"'
 else
-    echo '⚠️  Unknown OS detected!! Exiting....'
+    echo "💥 Unknown OS detected!"
+    echo "⚠️  Exiting for safety..."
     exit 1
 fi
 
-#Start=$(date -v -1m +%Y-%m-01)
 Start=$(date ${dt_1m} +%Y-%m-01)
 End=$(date +%Y-%m-01)
 
@@ -277,4 +318,14 @@ EIP_UNATTACHED=$(jq '[.Addresses[] | select((.InstanceId == null) and (.NetworkI
 
 echo "📡 Route 53 monthly cost: ${ROUTE53_COST} USD" | tee -a "${SUMMARY_CSV}"
 echo "🌐 Elastic IP monthly cost: ${EIP_COST} USD  |  Total: ${EIP_TOTAL}  |  Unattached: ${EIP_UNATTACHED}" | tee -a "${SUMMARY_CSV}"
+
+# =========================================
+# 📦 Final packaging (v3)
+# Creates the requested tar.gz from OUTDIR contents
+# =========================================
+if [[ -n "${OUTFILE}" ]]; then
+  echo "📦 Packaging results into: ${OUTDIR%/}/${OUTFILE}"
+  tar -czf "${OUTDIR%/}/${OUTFILE}" -C "${OUTDIR}" .
+  echo "✅ Archive ready: ${OUTDIR%/}/${OUTFILE}"
+fi
 
