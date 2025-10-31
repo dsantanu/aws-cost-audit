@@ -2,9 +2,11 @@
 # ==========================================================
 # AWS Cost Optimization Data Collection Pack
 # ==========================================================
-# Collects key data for full AWS cost and utilization analysis.
-# Author: Santanu Das
-# Platform: macOS (BSD date) +  Linux compatible
+# Name   : AWS Cost Audit
+# Version: v1.0.1
+# Author : Santanu Das (@dsantanu)
+# License: MIT
+# Desc   : Collects data for AWS cost and usage analysis
 # ==========================================================
 
 set -euo pipefail
