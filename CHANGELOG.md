@@ -6,7 +6,22 @@ a single source of truth via `release.sh`.
 
 ---
 
-## v4.1.0 — 2025-11-01
+## v4.2.0 — 2025-10-29
+- Introduced Route53 and Elastic IP audit collectors:
+  - Fetches hosted zones, records, and EIP associations.
+  - Aggregates cost data from `route53-cost.json` and `eip-cost.json`.
+- Improved macOS and Linux date handling using adaptive `date` logic.
+- Fixed legacy `EU` region name handling for S3 bucket metrics.
+- Enhanced summary CSV generation and cost reporting structure.
+- Added visual icons and better report output consistency.
+
+## v4.1.0 — 2025-10-28
+- Fixed support for selective section execution (`--ec2`, `--dns`, etc.).
+- Introduced `safe_jq` function to handle missing or invalid JSON fields.
+- Fixed “No such file” errors for optional summary `.txt` files.
+- Refined packaging process for macOS tar archives.
+- Enhanced summary report output for modular execution modes.
+- General cleanup and stability improvements.
 - Changed the OUTDIR suffix to `outdir`.
 
 ## v4.0.0 — 2025-10-27
