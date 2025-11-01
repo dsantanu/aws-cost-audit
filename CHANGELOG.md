@@ -6,7 +6,13 @@ a single source of truth via `release.sh`.
 
 ---
 
-## v4.0.0 — 2025-11-01
+## v4.1.0 — 2025-11-01
+- Changed the OUTDIR suffix to `outdir`.
+
+## v4.0.0 — 2025-10-27
+- Major modular rewrite introducing individual collectors:
+  - EC2, RDS, EBS, S3, EKS, Route53, and EIP resources.
+- Implemented cross-platform compatibility for BSD/macOS `date` syntax.
 - Added emoji icons and user-friendly progress logging throughout.
 
 ## v3.1.1 — 2025-10-27

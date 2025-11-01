@@ -1,100 +1,109 @@
 #!/usr/bin/env bash
+# shellcheck disable=SC2086,SC2155
 # ==========================================================
 # AWS Cost Optimization Data Collection Pack
 # ==========================================================
-# Name   : AWS Cost Audit
-# Version: v4.0.0
-# Author : Santanu Das (@dsantanu)
-# License: MIT
-# Desc   : Collects data for AWS cost and usage analysis
+# Name    : AWS Cost Audit
+# Version : v4.1.0
+# Author  : Santanu Das (@dsantanu)
+# License : MIT
+# Desc    : Collects data for AWS cost and usage analysis
+# Supports:
+#   -p, --profile  AWS CLI profile
+#   -o, --out      Output tar.gz filename
+#   -d, --dest     Output directory
+#   -r, --report   Report-only mode (skip collectors)
+#   -h, --help     Show help
+# Selective collectors:
+#   --all, --ec2, --rds, --storage, --dns, --eip,
+#   --network, --tags, --cost, --optimizer
 # ==========================================================
 set -euo pipefail
 
 # ==========================================================
-# 🧠 CLI Argument Parser (v4)
+# 🎨 Color definitions (ANSI escape codes)
 # ==========================================================
+if ! tput colors &>/dev/null; then
+  RED=""; GRN=""; YLW=""; BLU=""; CYN=""; BLD=""; NC="";
+else
+  RED=$(tput setaf 1)   # red
+  GRN=$(tput setaf 2)   # green
+  YLW=$(tput setaf 3)   # yellow
+  CYN=$(tput setaf 6)   # cyan
+  BLD=$(tput bold)
+  NC=$(tput sgr0)
+fi
 
-AWS_PROFILE="default"
-OUTDIR="./outputs-$(date +%Y-%m-%d)"
-REPORT_ONLY=false
-OUTFILE="aws-cost-audit-$(date +%Y%m%d).tgz"
+# ==========================================================
+# ⏱️ Timing helper
+# ==========================================================
+measure() {
+  local section="$1"
+  shift
+  local start end duration
+  start=$(date +%s)
+  echo "▶️  Starting ${section}..."
+  "$@"
+  end=$(date +%s)
+  duration=$((end - start))
+  echo "⏱️  ${section} completed in ${duration}s"
+}
 
+safe_jq() {
+  local file="$1"; shift
+  if [[ -f "${file}" ]]; then
+    jq "$@" "${file}"
+  else
+    echo "${YLW}⚠️  Skipping missing file: ${file}${NC}" >&2
+    return 1
+  fi
+}
+
+# ==========================================================
+# ⏱️ Script  helper
+# ==========================================================
 show_help() {
 cat <<EOF
-🧾 AWS Cost Audit Script (v3)
-Usage: $(basename "$0") [options]
+${BLD}AWS Cost Audit Script${NC}
+${YLW}Usage:${NC} $(basename "$0") [options]
 
-Options:
-  -p, --profile <name>   AWS CLI profile [default: default]
-  -o, --outfile <file>   Output tar.gz filename
-                         [default: aws-cost-audit-YYYYMMDD.tar.gz]
-  -d, --dest <dir>       Output directory [default: ./]
-  -r, --report           Only run the report generation step (skip collectors)
-  -h, --help             Show this help message and exit
+${BLD}General options:${NC}
+  ${GRN}-p, --profile <name>${NC}   AWS CLI profile (default: default)
+  ${GRN}-o, --out <file>${NC}       Output tar.gz filename
+                         default: aws-cost-audit-YYYYMMDD.tgz
+  ${GRN}-d, --dest <dir>${NC}       Output directory (default: ./)
+  ${GRN}-r, --report${NC}           Only run the report generation step (skip collectors)
+  ${GRN}-h, --help${NC}             Show this help message
 
-  Collections:
-    --all         Run all collectors (default)
-    --ec2         EC2 inventory + CPU metrics
-    --rds         RDS inventory
-    --storage     EBS + S3
-    --dns         Route 53 (zones/records/cost)
-    --eip         Elastic IPs
-    --network     EKS + networking resources
-    --tags        Resource tags
-    --cost        Cost Explorer summaries
-    --optimizer   Compute Optimizer enrollment check
+${BLD}Selective collectors:${NC}
+  ${CYN}--all${NC}         Run all collectors (default)
+  ${CYN}--dns${NC}         Route 53 (zones/records/cost)
+  ${CYN}--ec2${NC}         EC2 inventory + CPU metrics
+  ${CYN}--eip${NC}         Elastic IPs (addresses + cost)
+  ${CYN}--eks${NC}         EKs + NodeGroups
+  ${CYN}--rds${NC}         RDS inventory
+  ${CYN}--cost${NC}        Cost Explorer summaries
+  ${CYN}--tags${NC}        Resource tags
+  ${CYN}--network${NC}     EKS + networking resources
+  ${CYN}--storage${NC}     EBS + S3
+  ${CYN}--optimizer${NC}   Compute Optimizer enrollment check
+
+${BLD}Example:${NC}
+  $(basename "$0") -p prod -d outputs --ec2 --dns
+
 EOF
 }
 
-# Parse arguments
-while [[ $# -gt 0 ]]; do
-  case "$1" in
-    -p|--profile) AWS_PROFILE="$2"; shift 2;;
-    -o|--outfile) OUTFILE="$2";     shift 2;;
-    -d|--dest)    OUTDIR="$2";      shift 2;;
-    -r|--report)  REPORT_ONLY=true; shift ;;
-    -h|--help)    show_help; exit 0;;
-    *) echo "⚠️ Unknown option: $1"; show_help; exit 1;;
-  esac
-done
-
-export AWS_PROFILE
-mkdir -p "${OUTDIR}"
-
-echo "👤 Using AWS profile: ${AWS_PROFILE}"
-echo "📁 Output directory: ${OUTDIR}"
-echo "📦 Archive name: ${OUTFILE}"
-echo "📊 Report-only mode: ${REPORT_ONLY}"
-
-# When report-only is requested, stub AWS CLI to no-op so collectors are skipped
-if [[ "${REPORT_ONLY}" == true ]]; then
-  echo "📈 Report-only: skipping AWS collection calls..."
-  aws() { command aws --profile "${AWS_PROFILE}" "$@" >/dev/null 2>&1 || true; }
-fi
-
-# Ensure date handling remains cross-platform (macOS/Linux)
-if [[ $(uname -s) == 'Darwin' ]]; then
-    echo "🍎 macOS detected — using BSD-compatible date options"
-    dt_1m='-v -1m'
-    dt_7d='-u -v -7d'
-elif [[ $(uname -s) == 'Linux' ]]; then
-    echo "🐧 Linux detected — using GNU date options"
-    dt_1m='-d "1 month ago"'
-    dt_7d='-u -d "7 days ago"'
-else
-    echo "💥 Unknown OS detected!"
-    echo "⚠️  Exiting for safety..."
-    exit 1
-fi
-
-Start=$(date ${dt_1m} +%Y-%m-01)
-End=$(date +%Y-%m-01)
-
 # ==========================================================
-# 🎛️ v4 selective collectors
+# 🧠 Unified CLI Parser (v4)
 # ==========================================================
 
-# Default: run all collectors unless specific ones are given
+# --- Defaults ---
+AWS_PROFILE="default"
+OUTDIR="./outdir-$(date +%Y-%m-%d)"
+OUTFILE="aws-cost-audit-$(date +%Y%m%d).tgz"
+REPORT_ONLY=false
+
 RUN_ALL=true
 RUN_EC2=false
 RUN_RDS=false
@@ -106,26 +115,64 @@ RUN_TAGS=false
 RUN_COST=false
 RUN_OPTIMIZER=false
 
-# Re-parse collector flags
+# --- Parse arguments ---
 while [[ $# -gt 0 ]]; do
   case "$1" in
+    # === general options ===
+    -p|--profile) AWS_PROFILE="$2"; shift 2;;
+    -o|--out)     OUTFILE="$2";     shift 2;;
+    -d|--dest)    OUTDIR="$2";      shift 2;;
+    -r|--report)  REPORT_ONLY=true; RUN_ALL=false; shift;;
+    -h|--help)    show_help; exit 0;;
+
+    # === collector flags ===
     --all)        RUN_ALL=true; shift;;
-    --ec2)        RUN_EC2=true; RUN_ALL=false; shift;;
-    --rds)        RUN_RDS=true; RUN_ALL=false; shift;;
-    --storage)    RUN_STORAGE=true; RUN_ALL=false; shift;;
     --dns)        RUN_DNS=true; RUN_ALL=false; shift;;
+    --ec2)        RUN_EC2=true; RUN_ALL=false; shift;;
     --eip)        RUN_EIP=true; RUN_ALL=false; shift;;
-    --network)    RUN_NETWORK=true; RUN_ALL=false; shift;;
-    --tags)       RUN_TAGS=true; RUN_ALL=false; shift;;
+    --eks)        RUN_EKS=true; RUN_ALL=false; shift;;
+    --rds)        RUN_RDS=true; RUN_ALL=false; shift;;
     --cost)       RUN_COST=true; RUN_ALL=false; shift;;
+    --tags)       RUN_TAGS=true; RUN_ALL=false; shift;;
+    --network)    RUN_NETWORK=true; RUN_ALL=false; shift;;
+    --storage)    RUN_STORAGE=true; RUN_ALL=false; shift;;
     --optimizer)  RUN_OPTIMIZER=true; RUN_ALL=false; shift;;
-    *)            break;;
+    *)
+      echo "⚠️ Unknown option: $1"
+      show_help
+      exit 1;;
   esac
 done
 
-# Function to decide if a section runs
+export AWS_PROFILE
+mkdir -p "$OUTDIR"
+
+echo "👤 Using AWS profile: ${AWS_PROFILE}"
+echo "📁 Output directory: ${OUTDIR}"
+echo "📦 Archive name: ${OUTFILE}"
+echo "📊 Report-only mode: ${REPORT_ONLY}"
+
+# --- Helper: cross-platform date ---
+if [[ $(uname -s) == 'Darwin' ]]; then
+  echo "🍎 macOS detected — using BSD-compatible date options"
+  dt_1m='-v -1m'
+  dt_7d='-u -v -7d'
+elif [[ $(uname -s) == 'Linux' ]]; then
+  echo "🐧 Linux detected — using GNU date options"
+  dt_1m='-d "1 month ago"'
+  dt_7d='-u -d "7 days ago"'
+else
+  echo "💥 Unknown OS detected!"
+  echo "⚠️ Exiting for safety..."
+  exit 1
+fi
+
+Start=$(date ${dt_1m} +%Y-%m-01)
+End=$(date +%Y-%m-01)
+echo "🗓️ Collecting data for period: $Start → $End"
+
+# ---- Helper: determine if section runs ---------------- ##
 run_sec() {
-  # $1 = section name (ec2|rds|storage|dns|eip|network|tags|cost|optimizer)
   [[ "${REPORT_ONLY}" == true ]] && return 1
   [[ "${RUN_ALL}" == true ]] && return 0
   case "$1" in
@@ -146,12 +193,12 @@ if [[ "${REPORT_ONLY}" == true ]]; then
   echo "📈 Report-only: generating report from existing data..."
 fi
 
-echo "🗓️ Collecting data for period: ${Start} → ${End}"
-
+## ---- 📊 Collectors ----------------------------------- ##
 
 # ==========================================================
 # 01. Cost and Usage Summaries
 # ==========================================================
+
 if run_sec cost; then
   echo "💰 Collecting cost summaries..."
   aws ce get-cost-and-usage \
@@ -170,7 +217,7 @@ if run_sec cost; then
 fi
 
 # ==========================================================
-# 02. EC2 Instances, EIPs and CPU Utilization
+# 02. EC2 Instances and CPU Utilization
 # ==========================================================
 if run_sec ec2; then
   echo "⚙️ Collecting EC2 inventory..."
@@ -186,7 +233,10 @@ if run_sec ec2; then
     --output json > "${OUTDIR}/ec2-instances.json"
 
   echo "📊 Collecting EC2 CPU metrics (last 7 days)..."
-  for i in $(aws ec2 describe-instances --query "Reservations[].Instances[].InstanceId" --output text); do
+  for i in $(aws ec2 describe-instances \
+                     --query "Reservations[].Instances[].InstanceId" \
+                     --output text\
+            ); do
     aws cloudwatch get-metric-statistics \
       --namespace AWS/EC2 \
       --metric-name CPUUtilization \
@@ -194,78 +244,58 @@ if run_sec ec2; then
       --end-time "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
       --period 3600 \
       --statistics Average \
-      --dimensions Name=InstanceId,Value=${i} \
+      --dimensions Name=InstanceId,Value=$i \
       --output json > "${OUTDIR}/cpu_${i}.json"
   done
 fi
 
 # ==========================================================
-# 03. Elastic IP addresses
+# 04. EBS Volumes and S3 Buckets
 # ==========================================================
-if run_sec eip; then
-echo "🌐 Collecting Elastic IP (EIP) data..."
-aws ec2 describe-addresses --output json > "${OUTDIR}/elastic-ips.json"
-aws ce get-cost-and-usage \
-  --time-period Start=$(date -v -30d +%F),End=$(date +%F) \
-  --granularity MONTHLY \
-  --metrics "UnblendedCost" \
-  --filter '{"Dimensions": {"Key": "SERVICE", "Values": ["EC2 - Elastic IP Addresses"]}}' \
-  --output json > "${OUTDIR}/eip-cost.json"
-fi
+if run_sec storage; then
+  echo "💾 Collecting EBS volume data..."
+  aws ec2 describe-volumes \
+    --query 'Volumes[].{
+      VolumeId: VolumeId,
+      Size: Size,
+      VolumeType: VolumeType,
+      State: State,
+      InstanceId: (Attachments[0].InstanceId),
+      Encrypted: Encrypted,
+      CreateTime: CreateTime,
+      Tags: Tags
+    }' \
+    --output json > "${OUTDIR}/ebs-volumes.json"
 
-# ==========================================================
-# 04. EBS Volumes
-# ==========================================================
-if run_sec ebs; then
-echo "💾 Collecting EBS volume data..."
-aws ec2 describe-volumes \
-  --query 'Volumes[].{
-    VolumeId: VolumeId,
-    Size: Size,
-    VolumeType: VolumeType,
-    State: State,
-    InstanceId: (Attachments[0].InstanceId),
-    Encrypted: Encrypted,
-    CreateTime: CreateTime,
-    Tags: Tags
-  }' \
-  --output json > "${OUTDIR}/ebs-volumes.json"
-fi
+  echo "🪣 Listing S3 buckets..."
+  aws s3api list-buckets --query "Buckets[].Name" --output text | tr '\t' '\n' > "${OUTDIR}/s3-buckets.txt"
 
-# ==========================================================
-# 05. S3 Buckets & Storage
-# ==========================================================
-if run_sec s3; then
-echo "🪣 Listing S3 buckets..."
-aws s3api list-buckets --query "Buckets[].Name" \
-                       --output text | tr '\t' '\n' > "${OUTDIR}/s3-buckets.txt"
+  echo "📦 Collecting S3 bucket metrics (7-day average)..."
+  while IFS= read -r b; do
+    # Skip empty lines
+    [[ -z "$b" ]] && continue
+    echo "   → Checking bucket: $b"
 
-echo "📦 Collecting S3 bucket metrics (7-day average)..."
-while IFS= read -r b; do
-  # Skip empty lines
-  [[ -z "${b}" ]] && continue
-  echo "   → Checking bucket: ${b}"
+    region=$(aws s3api get-bucket-location --bucket "$b" --query 'LocationConstraint' \
+                                           --output text 2>/dev/null || echo "unknown")
 
-  region=$(aws s3api get-bucket-location --bucket "${b}" --query 'LocationConstraint' \
-                                         --output text 2>/dev/null || echo "unknown")
+    # Fix legacy or null region cases
+    case "${region}" in
+      None|null|"") region="us-east-1" ;;
+      EU) region="eu-west-1" ;;
+    esac
 
-  # Fix legacy or null region cases
-  case "${region}" in
-    None|null|"") region="us-east-1" ;;
-    EU) region="eu-west-1" ;;
-  esac
-
-  aws cloudwatch get-metric-statistics \
-    --namespace AWS/S3 \
-    --metric-name BucketSizeBytes \
-    --start-time "$(date ${dt_7d} +%Y-%m-%dT%H:%M:%SZ)" \
-    --end-time "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
-    --period 86400 \
-    --statistics Average \
-    --dimensions Name=BucketName,Value="${b}" Name=StorageType,Value=StandardStorage \
-    --region "${region}" \
-    --output json > "${OUTDIR}/s3-${b}-size.json" || echo "⚠️ Skipped ${b} (no metrics or access denied)"
-done < "${OUTDIR}/s3-buckets.txt"
+    aws cloudwatch get-metric-statistics \
+      --namespace AWS/S3 \
+      --metric-name BucketSizeBytes \
+      --start-time "$(date ${dt_7d} +%Y-%m-%dT%H:%M:%SZ)" \
+      --end-time "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+      --period 86400 \
+      --statistics Average \
+      --dimensions Name=BucketName,Value="$b" Name=StorageType,Value=StandardStorage \
+      --region "${region}" \
+      --output json > "${OUTDIR}/s3-${b}-size.json" || echo "⚠️ Skipped $b (no metrics or access denied)"
+  done < "${OUTDIR}/s3-buckets.txt"
 fi
 
 # ==========================================================
@@ -274,8 +304,8 @@ fi
 if run_sec rds; then
   echo "🗄️ Collecting RDS data..."
   aws rds describe-db-instances \
-      --query "DBInstances[].[DBInstanceIdentifier,Engine,DBInstanceClass,AllocatedStorage,StorageType,MultiAZ,PubliclyAccessible,Status]" \
-      --output json > "${OUTDIR}/rds.json"
+    --query "DBInstances[].[DBInstanceIdentifier,Engine,DBInstanceClass,AllocatedStorage,StorageType,MultiAZ,PubliclyAccessible,Status]" \
+    --output json > "${OUTDIR}/rds.json"
 fi
 
 # ==========================================================
@@ -286,59 +316,80 @@ if run_sec eks; then
   aws eks list-clusters --output text > "${OUTDIR}/eks-clusters.txt"
 
   while read -r c; do
-    aws eks describe-cluster --name "${c}" --output json > "${OUTDIR}/eks-${c}.json"
-    aws eks list-nodegroups --cluster-name "${c}" --output text > "${OUTDIR}/eks-${c}-nodegroups.txt"
+    aws eks describe-cluster --name "$c" --output json > "${OUTDIR}/eks-${c}.json"
+    aws eks list-nodegroups --cluster-name "$c" --output text > "${OUTDIR}/eks-${c}-nodegroups.txt"
+
     while read -r ng; do
-      aws eks describe-nodegroup --cluster-name "${c}" --nodegroup-name "${ng}" \
-                                 --output json > "${OUTDIR}/eks-${c}-${ng}.json"
+      aws eks describe-nodegroup --cluster-name "$c" --nodegroup-name "$ng" --output json > "${OUTDIR}/eks-${c}-${ng}.json"
     done < "${OUTDIR}/eks-${c}-nodegroups.txt"
   done < "${OUTDIR}/eks-clusters.txt"
 fi
 
 # ==========================================================
+# 09. Networking Components
+# ==========================================================
+if run_sec network; then
+  echo "🌐 Collecting networking resources..."
+  aws elbv2 describe-load-balancers --output json > "${OUTDIR}/loadbalancers.json"
+  aws ec2 describe-nat-gateways --output json > "${OUTDIR}/nat-gateways.json"
+fi
+
+# ==========================================================
 # 08. DNS/Route53 Components
 # ==========================================================
-echo "📡 Collecting Route53 hosted zones data..."
-aws route53 list-hosted-zones --output json > "${OUTDIR}/route53-zones.json"
-aws route53 list-health-checks --output json > "${OUTDIR}/route53-health-checks.json"
+if run_sec dns; then
+  echo "📡 Collecting Route53 hosted zones data..."
+  aws route53 list-hosted-zones --output json > "${OUTDIR}/route53-zones.json"
+  aws route53 list-health-checks --output json > "${OUTDIR}/route53-health-checks.json"
 
-echo "💥 Exporting record sets for each hosted zone..."
-jq -r '.HostedZones[].Id' "${OUTDIR}/route53-zones.json" | sed 's#/hostedzone/##' | while read -r ZONE_ID; do
-  echo "   → Zone ID: ${ZONE_ID}"
-
-  aws route53 list-resource-record-sets \
-    --hosted-zone-id "${ZONE_ID}" \
-    --output json > "${OUTDIR}/route53-records-${ZONE_ID}.json"
-done
-
-aws ce get-cost-and-usage \
+  aws ce get-cost-and-usage \
   --time-period Start=$(date -v -30d +%F),End=$(date +%F) \
   --granularity MONTHLY \
   --metrics "UnblendedCost" \
   --filter '{"Dimensions": {"Key": "SERVICE", "Values": ["Amazon Route 53"]}}' \
   --output json > "${OUTDIR}/route53-cost.json"
 
+  echo "💥 Exporting record sets for each hosted zone..."
+  jq -r '.HostedZones[].Id' "${OUTDIR}/route53-zones.json" | sed 's#/hostedzone/##' | while read -r ZONE_ID; do
+    echo "   → Zone ID: ${ZONE_ID}"
+    aws route53 list-resource-record-sets \
+      --hosted-zone-id "${ZONE_ID}" \
+      --output json > "${OUTDIR}/route53-records-${ZONE_ID}.json"
+  done
+fi
+
 # ==========================================================
-# 09. Networking Components
+# 03. Elastic IP addresses
 # ==========================================================
-echo "🌐 Collecting networking resources..."
-aws elbv2 describe-load-balancers --output json > "${OUTDIR}/loadbalancers.json"
-aws ec2 describe-nat-gateways --output json > "${OUTDIR}/nat-gateways.json"
+if run_sec eip; then
+  echo "🌐 Collecting Elastic IP (EIP) data..."
+  aws ec2 describe-addresses --output json > "${OUTDIR}/elastic-ips.json"
+  aws ce get-cost-and-usage \
+    --time-period Start=$(date -v -30d +%F),End=$(date +%F) \
+    --granularity MONTHLY \
+    --metrics "UnblendedCost" \
+    --filter '{"Dimensions": {"Key": "SERVICE", "Values": ["EC2 - Elastic IP Addresses"]}}' \
+    --output json > "${OUTDIR}/eip-cost.json"
+fi
 
 # ==========================================================
 # 10. Tagging Coverage
 # ==========================================================
-echo "🏷️ Collecting resource tags..."
-aws resourcegroupstaggingapi get-resources --output json > "${OUTDIR}/tags.json"
+if run_sec tags; then
+  echo "🏷️ Collecting resource tags..."
+  aws resourcegroupstaggingapi get-resources --output json > "${OUTDIR}/tags.json"
+fi
 
 # ==========================================================
 # 11. Trusted Advisor / Compute Optimizer (if enabled)
 # ==========================================================
-echo "🧠 Checking Compute Optimizer enrollment..."
-aws compute-optimizer get-enrollment-status --output json > "${OUTDIR}/compute-optimizer-status.json" || true
+if run_sec optimizer; then
+  echo "🧠 Checking Compute Optimizer enrollment..."
+  aws compute-optimizer get-enrollment-status --output json > "${OUTDIR}/compute-optimizer-status.json" || true
+fi
 
 # ==========================================================
-# 12. Create Summary CSV
+# Summary + Packaging
 # ==========================================================
 echo "📈 Generating summary report..."
 
@@ -364,46 +415,43 @@ echo "${TOP_SERVICES}" >> "${SUMMARY_CSV}"
 EC2_TOTAL=$(jq '[.[] | select(.State=="running")] | length' "${OUTDIR}/ec2-instances.json")
 
 echo "" >> "${SUMMARY_CSV}"
-echo "EC2 Instances (running),${EC2_TOTAL}" >> "${SUMMARY_CSV}"
+echo "EC2 Instances (running),$EC2_TOTAL" >> "${SUMMARY_CSV}"
 
 # --- EBS unattached volumes
 EBS_UNATTACHED=$(jq 'map(select((.InstanceId // null) == null)) | length' "${OUTDIR}/ebs-volumes.json")
-echo "Unattached EBS Volumes,${EBS_UNATTACHED}" >> "${SUMMARY_CSV}"
+echo "Unattached EBS Volumes,$EBS_UNATTACHED" >> "${SUMMARY_CSV}"
 
 # --- S3 buckets
 S3_BUCKETS=$(wc -l < "${OUTDIR}/s3-buckets.txt" | xargs)
-echo "Total S3 Buckets,${S3_BUCKETS}" >> "${SUMMARY_CSV}"
+echo "Total S3 Buckets,$S3_BUCKETS" >> "${SUMMARY_CSV}"
 
 # --- EKS clusters
 EKS_COUNT=$(wc -l < "${OUTDIR}/eks-clusters.txt" | xargs)
-echo "EKS Clusters,${EKS_COUNT}" >> "${SUMMARY_CSV}"
+echo "EKS Clusters,$EKS_COUNT" >> "${SUMMARY_CSV}"
 
 # --- Tag coverage
 TAG_COUNT=$(jq '.ResourceTagMappingList | length' "${OUTDIR}/tags.json")
-echo "Tagged Resources,${TAG_COUNT}" >> "${SUMMARY_CSV}"
+echo "Tagged Resources,$TAG_COUNT" >> "${SUMMARY_CSV}"
 
 echo "" >> "${SUMMARY_CSV}"
 echo "Report generated: $(date)" >> "${SUMMARY_CSV}"
-
-# ==========================================================
-
-echo "✅ All collection completed!"
-echo "   Quick summary available in: ${SUMMARY_CSV##*/}"
 
 ROUTE53_COST=$(jq -r '.ResultsByTime[0].Total.UnblendedCost.Amount // 0' "${OUTDIR}/route53-cost.json" 2>/dev/null)
 EIP_COST=$(jq -r '.ResultsByTime[0].Total.UnblendedCost.Amount // 0' "${OUTDIR}/eip-cost.json" 2>/dev/null)
 EIP_TOTAL=$(jq '.Addresses | length' "${OUTDIR}/elastic-ips.json" 2>/dev/null)
 EIP_UNATTACHED=$(jq '[.Addresses[] | select((.InstanceId == null) and (.NetworkInterfaceId == null) and (.AssociationId == null))] | length' "${OUTDIR}/elastic-ips.json" 2>/dev/null)
 
-echo "📡 Route 53 monthly cost: ${ROUTE53_COST} USD" | tee -a "${SUMMARY_CSV}"
-echo "🌐 Elastic IP monthly cost: ${EIP_COST} USD  |  Total: ${EIP_TOTAL}  |  Unattached: ${EIP_UNATTACHED}" | tee -a "${SUMMARY_CSV}"
-
-# ==========================================================
-# 📦 Final packaging (v3)
-# Creates the requested .tgz from OUTDIR contents
-# ==========================================================
-if [[ -n "${OUTFILE}" ]]; then
-  echo "📦 Packaging results into: ${OUTFILE}"
-  tar -czf "${OUTFILE}" "${OUTDIR}" && mv "${OUTFILE}" "${OUTDIR}"/
-  echo "✅ Archive ready: ${OUTDIR##*/}/${OUTFILE}"
+if [[ "${REPORT_ONLY}" == true ]]; then
+  echo "📡 Route 53 monthly cost: (report mode - no new data)"
+  echo "🌐 Elastic IP monthly cost: (report mode - no new data)"
+else
+  echo "📡 Route 53 monthly cost: ${ROUTE53_COST} USD"
+  echo "🌐 Elastic IP monthly cost: ${EIP_COST} USD"
 fi
+
+echo "📦 Packaging results into: ${OUTFILE}"
+if [[ -n "${OUTFILE}" ]]; then
+  tar -czf "${OUTFILE}" "${OUTDIR}"
+  echo "✅ Archive ready: ${OUTFILE}"
+fi
+
