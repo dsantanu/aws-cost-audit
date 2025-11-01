@@ -1,7 +1,3 @@
-## v2.1.0 — 2025-10-31
-
-- Fixed `Can't add archive to itself` error
-
 # Changelog
 
 All notable changes to **AWS Cost Audit** will be documented in this file.
@@ -10,13 +6,30 @@ a single source of truth via `release.sh`.
 
 ---
 
+## v3.1.0 — 2025-11-01
+- Fixed final OUTFILE location.
+
+## v3.0.0 — 2025-10-29
+- Major CLI overhaul introducing new options:
+  - `--profile / -p` → Specify AWS CLI profile.
+  - `--out / -o` → Define final `.tgz` output file.
+  - `--dest / -d` → Specify custom output directory.
+  - `--report / -r` → Generate report-only mode.
+  - `--help / -h` → Display help section.
+- Added emojis and clearer section headers for readability.
+- Improved consistency in output directory creation logic.
+- Established groundwork for modular section execution (future v4 feature).
+
+## v2.1.0 — 2025-10-31
+- Fixed `Can't add archive to itself` error.
+
 ## v2.0.0 — 2025-10-28
-- Introduced CLI Argument Parser
-- Supports General options only
+- Introduced CLI Argument Parser.
+- Supports General options only.
 
 ## v1.0.1 — 2025-10-27
-- Added header information to the script
+- Added header information to the script.
 
 ## v1.0.0 — 2025-10-27
-- Initial first version
-- Change to compatiable date format for both Linux and macOS
+- Initial first version.
+- Change to compatiable date format for both Linux and macOS.

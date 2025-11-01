@@ -3,7 +3,7 @@
 # AWS Cost Optimization Data Collection Pack
 # ==========================================================
 # Name   : AWS Cost Audit
-# Version: v2.1.0
+# Version: v3.1.0
 # Author : Santanu Das (@dsantanu)
 # License: MIT
 # Desc   : Collects data for AWS cost and usage analysis
@@ -42,7 +42,7 @@ while [[ $# -gt 0 ]]; do
     -d|--dest)    OUTDIR="$2";      shift 2;;
     -r|--report)  REPORT_ONLY=true; shift ;;
     -h|--help)    show_help; exit 0;;
-    *) echo "⚠️ Unknown option: $1"; show_help; exit 1;;
+    *) echo "⚠️  Unknown option: $1"; show_help; exit 1;;
   esac
 done
 
@@ -300,16 +300,8 @@ echo "Tagged Resources,$TAG_COUNT" >> "${SUMMARY_CSV}"
 echo "" >> "${SUMMARY_CSV}"
 echo "Report generated: $(date)" >> "${SUMMARY_CSV}"
 
-# ==========================================================
-# 13. Archive
-# ==========================================================
-echo "🗃️ Compressing all results..."
-#set -x
-tar -czf aws-cost-audit-macos.tgz "${OUTDIR}"
-
-echo "✅ All Done!"
-echo "Results archived at: ${OUTDIR}/aws-cost-audit-macos.tar.gz"
-echo "Quick summary available in: ${SUMMARY_CSV}"
+echo "✅ All collection completed!"
+echo "   Quick summary available in: ${SUMMARY_CSV}"
 
 ROUTE53_COST=$(jq -r '.ResultsByTime[0].Total.UnblendedCost.Amount // 0' "${OUTDIR}/route53-cost.json" 2>/dev/null)
 EIP_COST=$(jq -r '.ResultsByTime[0].Total.UnblendedCost.Amount // 0' "${OUTDIR}/eip-cost.json" 2>/dev/null)
@@ -321,11 +313,10 @@ echo "🌐 Elastic IP monthly cost: ${EIP_COST} USD  |  Total: ${EIP_TOTAL}  |  
 
 # =========================================
 # 📦 Final packaging (v3)
-# Creates the requested tar.gz from OUTDIR contents
+# Creates the requested .tgz from OUTDIR contents
 # =========================================
 if [[ -n "${OUTFILE}" ]]; then
   echo "📦 Packaging results into: ${OUTDIR%/}/${OUTFILE}"
-  tar -czf "${OUTFILE}" "${OUTDIR}"
+  tar -czf "${OUTFILE}" "${OUTDIR}" && mv "${OUTFILE}" "${OUTDIR}"/
   echo "✅ Archive ready: ${OUTDIR%/}/${OUTFILE}"
 fi
-
