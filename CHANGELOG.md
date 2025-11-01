@@ -6,6 +6,9 @@ a single source of truth via `release.sh`.
 
 ---
 
+## v4.0.0 — 2025-11-01
+- Added emoji icons and user-friendly progress logging throughout.
+
 ## v3.1.1 — 2025-10-27
 - Wrapped around curly braces {..} around all bash variables.
 
