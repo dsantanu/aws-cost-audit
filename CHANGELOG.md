@@ -6,6 +6,9 @@ a single source of truth via `release.sh`.
 
 ---
 
+## v3.1.1 — 2025-11-01
+- Wrapped around curly braces {..} around all bash variables.
+
 ## v3.1.0 — 2025-11-01
 - Introduced `--report-only` mode without new data collection.
 - Ensured consistent use of `${OUTDIR}` and prevented double initialization.

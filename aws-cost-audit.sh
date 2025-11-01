@@ -3,7 +3,7 @@
 # AWS Cost Optimization Data Collection Pack
 # ==========================================================
 # Name   : AWS Cost Audit
-# Version: v3.1.0
+# Version: v3.1.1
 # Author : Santanu Das (@dsantanu)
 # License: MIT
 # Desc   : Collects data for AWS cost and usage analysis
@@ -55,7 +55,7 @@ echo "📦 Archive name: ${OUTFILE}"
 echo "📊 Report-only mode: ${REPORT_ONLY}"
 
 # When report-only is requested, stub AWS CLI to no-op so collectors are skipped
-if [[ "$REPORT_ONLY" == true ]]; then
+if [[ "${REPORT_ONLY}" == true ]]; then
   echo "📈 Report-only: skipping AWS collection calls..."
   aws() { command aws --profile "${AWS_PROFILE}" "$@" >/dev/null 2>&1 || true; }
 fi
@@ -122,7 +122,7 @@ for i in $(aws ec2 describe-instances --query "Reservations[].Instances[].Instan
     --end-time "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
     --period 3600 \
     --statistics Average \
-    --dimensions Name=InstanceId,Value=$i \
+    --dimensions Name=InstanceId,Value=${i} \
     --output json > "${OUTDIR}/cpu_${i}.json"
 done
 
@@ -164,10 +164,10 @@ aws s3api list-buckets --query "Buckets[].Name" --output text | tr '\t' '\n' > "
 echo "📦 Collecting S3 bucket metrics (7-day average)..."
 while IFS= read -r b; do
   # Skip empty lines
-  [[ -z "$b" ]] && continue
-  echo "   → Checking bucket: $b"
+  [[ -z "${b}" ]] && continue
+  echo "   → Checking bucket: ${b}"
 
-  region=$(aws s3api get-bucket-location --bucket "$b" --query 'LocationConstraint' \
+  region=$(aws s3api get-bucket-location --bucket "${b}" --query 'LocationConstraint' \
                                          --output text 2>/dev/null || echo "unknown")
 
   # Fix legacy or null region cases
@@ -183,9 +183,9 @@ while IFS= read -r b; do
     --end-time "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
     --period 86400 \
     --statistics Average \
-    --dimensions Name=BucketName,Value="$b" Name=StorageType,Value=StandardStorage \
+    --dimensions Name=BucketName,Value="${b}" Name=StorageType,Value=StandardStorage \
     --region "${region}" \
-    --output json > "${OUTDIR}/s3-${b}-size.json" || echo "⚠️ Skipped $b (no metrics or access denied)"
+    --output json > "${OUTDIR}/s3-${b}-size.json" || echo "⚠️ Skipped ${b} (no metrics or access denied)"
 done < "${OUTDIR}/s3-buckets.txt"
 
 # ==========================================================
@@ -203,10 +203,10 @@ echo "☸️ Collecting EKS clusters..."
 aws eks list-clusters --output text > "${OUTDIR}/eks-clusters.txt"
 
 while read -r c; do
-  aws eks describe-cluster --name "$c" --output json > "${OUTDIR}/eks-${c}.json"
-  aws eks list-nodegroups --cluster-name "$c" --output text > "${OUTDIR}/eks-${c}-nodegroups.txt"
+  aws eks describe-cluster --name "${c}" --output json > "${OUTDIR}/eks-${c}.json"
+  aws eks list-nodegroups --cluster-name "${c}" --output text > "${OUTDIR}/eks-${c}-nodegroups.txt"
   while read -r ng; do
-    aws eks describe-nodegroup --cluster-name "$c" --nodegroup-name "$ng" --output json > "${OUTDIR}/eks-${c}-${ng}.json"
+    aws eks describe-nodegroup --cluster-name "${c}" --nodegroup-name "${ng}" --output json > "${OUTDIR}/eks-${c}-${ng}.json"
   done < "${OUTDIR}/eks-${c}-nodegroups.txt"
 done < "${OUTDIR}/eks-clusters.txt"
 
@@ -279,23 +279,23 @@ echo "${TOP_SERVICES}" >> "${SUMMARY_CSV}"
 EC2_TOTAL=$(jq '[.[] | select(.State=="running")] | length' "${OUTDIR}/ec2-instances.json")
 
 echo "" >> "${SUMMARY_CSV}"
-echo "EC2 Instances (running),$EC2_TOTAL" >> "${SUMMARY_CSV}"
+echo "EC2 Instances (running),${EC2_TOTAL}" >> "${SUMMARY_CSV}"
 
 # --- EBS unattached volumes
 EBS_UNATTACHED=$(jq 'map(select((.InstanceId // null) == null)) | length' "${OUTDIR}/ebs-volumes.json")
-echo "Unattached EBS Volumes,$EBS_UNATTACHED" >> "${SUMMARY_CSV}"
+echo "Unattached EBS Volumes,${EBS_UNATTACHED}" >> "${SUMMARY_CSV}"
 
 # --- S3 buckets
 S3_BUCKETS=$(wc -l < "${OUTDIR}/s3-buckets.txt" | xargs)
-echo "Total S3 Buckets,$S3_BUCKETS" >> "${SUMMARY_CSV}"
+echo "Total S3 Buckets,${S3_BUCKETS}" >> "${SUMMARY_CSV}"
 
 # --- EKS clusters
 EKS_COUNT=$(wc -l < "${OUTDIR}/eks-clusters.txt" | xargs)
-echo "EKS Clusters,$EKS_COUNT" >> "${SUMMARY_CSV}"
+echo "EKS Clusters,${EKS_COUNT}" >> "${SUMMARY_CSV}"
 
 # --- Tag coverage
 TAG_COUNT=$(jq '.ResourceTagMappingList | length' "${OUTDIR}/tags.json")
-echo "Tagged Resources,$TAG_COUNT" >> "${SUMMARY_CSV}"
+echo "Tagged Resources,${TAG_COUNT}" >> "${SUMMARY_CSV}"
 
 echo "" >> "${SUMMARY_CSV}"
 echo "Report generated: $(date)" >> "${SUMMARY_CSV}"
@@ -316,7 +316,7 @@ echo "🌐 Elastic IP monthly cost: ${EIP_COST} USD  |  Total: ${EIP_TOTAL}  |  
 # Creates the requested .tgz from OUTDIR contents
 # =========================================
 if [[ -n "${OUTFILE}" ]]; then
-  echo "📦 Packaging results into: ${OUTDIR%/}/${OUTFILE}"
+  echo "📦 Packaging results into: ${OUTFILE}"
   tar -czf "${OUTFILE}" "${OUTDIR}" && mv "${OUTFILE}" "${OUTDIR}"/
-  echo "✅ Archive ready: ${OUTDIR%/}/${OUTFILE}"
+  echo "✅ Archive ready: ${OUTDIR##*/}/${OUTFILE}"
 fi
