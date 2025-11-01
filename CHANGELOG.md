@@ -7,6 +7,11 @@ a single source of truth via `release.sh`.
 ---
 
 ## v3.1.0 — 2025-11-01
+- Introduced `--report-only` mode without new data collection.
+- Ensured consistent use of `${OUTDIR}` and prevented double initialization.
+- Improved summary output formatting for Route53 and EIP sections.
+- Added basic emoji icons for OS detection and exit messages.
+- Minor stability and path consistency improvements.
 - Fixed final OUTFILE location.
 
 ## v3.0.0 — 2025-10-29
