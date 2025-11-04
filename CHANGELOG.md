@@ -6,6 +6,20 @@ a single source of truth via `release.sh`.
 
 ---
 
+## v4.3.0 — 2025-11-04
+- General cleanup of output variables and defensive guards to prevent unset-variable errors.
+
+## v4.3.0 — 2025-11-04
+### Highlights
+- Robust AWS profile detection and authentication validation.
+- Improved macOS/Linux cross-compatibility.
+- Cleaned up argument parsing and output consistency.
+### Changes
+- Reworked **AWS profile validation** logic to get correct profile.
+- Added dynamic **script metadata extraction** (`Name`, `Author`, `Version`).
+- Fixed remaining issues between GNU and BSD/macOS date handling.
+- Refined script header formatting for better readability and maintainability.
+
 ## v4.2.0 — 2025-10-29
 - Introduced Route53 and Elastic IP audit collectors:
   - Fetches hosted zones, records, and EIP associations.

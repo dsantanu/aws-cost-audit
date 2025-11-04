@@ -1,13 +1,12 @@
 #!/usr/bin/env bash
 # shellcheck disable=SC2086,SC2155
 # ==========================================================
-# AWS Cost Optimization Data Collection Pack
+# 🧾 AWS Cost Audit Script
 # ==========================================================
 # Name    : AWS Cost Audit
-# Version : v4.2.0
-# Author  : Santanu Das (@dsantanu)
-# License : MIT
-# Desc    : Collects data for AWS cost and usage analysis
+# Author  : Santanu Das (@dsantanu) | License : MIT
+# Version : v4.3.0
+# Desc    : AWS cost auditing & FinOps toolkit
 # Supports:
 #   -p, --profile  AWS CLI profile
 #   -o, --out      Output tar.gz filename
@@ -17,12 +16,21 @@
 # Selective collectors:
 #   --all, --ec2, --rds, --storage, --dns, --eip,
 #   --network, --tags, --cost, --optimizer
-# =========================================
+# ==========================================================
 set -euo pipefail
 
-# =========================================
+# Extract metadata from header comments dynamically
+get_meta() {
+  awk -F':' -v key="$1" '$0 ~ "^# " key {print $2}' "$0" | xargs
+}
+#
+NAME=$(get_meta "Name")
+AUTHOR=$(get_meta "Author")
+VERSION=$(get_meta "Version")
+
+# ==========================================================
 # 🎨 Color definitions (ANSI escape codes)
-# =========================================
+# ==========================================================
 if ! tput colors &>/dev/null; then
   RED=""; GRN=""; YLW=""; BLU=""; CYN=""; BLD=""; NC="";
 else
@@ -34,9 +42,9 @@ else
   NC=$(tput sgr0)
 fi
 
-# =========================================
+# ==========================================================
 # ⏱️ Timing helper
-# =========================================
+# ==========================================================
 measure() {
   local section="$1"
   shift
@@ -49,9 +57,9 @@ measure() {
   echo "⏱️  ${section} completed in ${duration}s"
 }
 
-# =========================================
-# ⏱️ Command helper
-# =========================================
+# ==========================================================
+# 🧰 Command helper
+# ==========================================================
 safe_jq() {
   local jq_args=()
   local file=""
@@ -64,8 +72,8 @@ safe_jq() {
   if [[ -n "${file}" ]]; then
     jq "${jq_args[@]}" "${file}" || echo "0"
   else
-    echo "0"
     #echo "${YLW}⚠️  Missing file argument to safe_jq${NC}" >&2
+    echo "0"
   fi
 }
 
@@ -89,12 +97,13 @@ safe_count() {
   fi
 }
 
-# =========================================
-# ⏱️ Script  helper
-# =========================================
+# ==========================================================
+# 🛠️ Script  helper
+# ==========================================================
 show_help() {
 cat <<EOF
-${BLD}AWS Cost Audit Script${NC}
+
+${BLD}${NAME} (${VERSION})${NC}
 ${YLW}Usage:${NC} $(basename "$0") [options]
 
 ${BLD}General options:${NC}
@@ -124,15 +133,17 @@ ${BLD}Example:${NC}
 EOF
 }
 
-# =========================================
+# ==========================================================
 # 🧠 Unified CLI Parser (v4)
-# =========================================
+# ==========================================================
 
+##set -x
 # --- Defaults ---
 AWS_PROFILE="default"
-OUTDIR="./outdir-$(date +%Y-%m-%d)"
-OUTFILE="aws-cost-audit-$(date +%Y%m%d).tgz"
 REPORT_ONLY=false
+ACCID=''
+OUTDIR=''
+OUTFILE=''
 
 RUN_ALL=true
 RUN_EC2=false
@@ -149,9 +160,33 @@ RUN_OPTIMIZER=false
 while [[ $# -gt 0 ]]; do
   case "$1" in
     # === general options ===
-    -p|--profile) AWS_PROFILE="$2"; shift 2;;
-    -o|--out)     OUTFILE="$2";     shift 2;;
-    -d|--dest)    OUTDIR="$2";      shift 2;;
+    -p|--profile)
+      if [[ -n "${2:-}" && ! "$2" =~ ^- ]]; then
+        AWS_PROFILE="$2"
+        shift 2
+      else
+        echo "⚠️  Missing argument for -p|--profile"
+        exit 1
+      fi
+      ;;
+    -d|--dest)
+      if [[ -n "${2:-}" && ! "$2" =~ ^- ]]; then
+        OUTDIR="$2"
+        shift 2
+      else
+        OUTDIR="./"
+        shift 1
+      fi
+      ;;
+    -o|--out)
+      if [[ -n "${2:-}" && ! "$2" =~ ^- ]]; then
+        OUTFILE="$2"
+        shift 2
+      else
+        echo "⚠️  Missing argument for -o|--out"
+        exit 1
+      fi
+      ;;
     -r|--report)  REPORT_ONLY=true; RUN_ALL=false; shift;;
     -h|--help)    show_help; exit 0;;
 
@@ -174,22 +209,92 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
+# ==========================================================
+# 🔐 AWS Profile Detection & Validation (supports key + SSO)
+# ==========================================================
+AWS_CONFIG_FILE="${HOME}/.aws/config"
+AWS_CREDENTIALS_FILE="${HOME}/.aws/credentials"
+
+# --- Extract profile names safely ---
+# From credentials (key-based)
+CRED_PROFILES=$(grep '^\[' "${AWS_CREDENTIALS_FILE}" 2>/dev/null | tr -d '[]')
+
+# From config (SSO or assume-role)
+CONFIG_PROFILES=$(grep '^\[profile ' "${AWS_CONFIG_FILE}" 2>/dev/null | awk '{print $2}' | tr -d ']' || true)
+
+# Add [default] from config if it’s the only section or actually usable (SSO or assume-role)
+DEFAULT_USABLE=false
+if [[ -f "${AWS_CONFIG_FILE}" ]]; then
+  if awk '/^\[default\]/{in_default=1; next} /^\[/{in_default=0} in_default && /(sso_start_url|role_arn)/{found=1} END{exit !found}' "${AWS_CONFIG_FILE}"; then
+    DEFAULT_USABLE=true
+  fi
+fi
+
+# --- Combine usable profiles ---
+ALL_PROFILES="${CRED_PROFILES} ${CONFIG_PROFILES}"
+if [[ "${DEFAULT_USABLE}" == true ]] || { [[ -z "${ALL_PROFILES}" ]] && grep -q '^\[default\]' "${AWS_CONFIG_FILE}" 2>/dev/null; }; then
+  ALL_PROFILES="default ${ALL_PROFILES}"
+fi
+
+# --- Cleanup and de-duplicate ---
+ALL_PROFILES=$(echo "${ALL_PROFILES}" | tr ' ' '\n' | sort -u | xargs)
+
+# --- Handle no profiles at all ---
+if [[ -z "${ALL_PROFILES}" ]]; then
+  echo "❌ No usable AWS profiles found."
+  echo "💡 Run 'aws configure' for key-based auth, or 'aws configure sso' for SSO setup."
+  exit 1
+fi
+
+# --- Validate selected profile ---
+if ! grep -qw "${AWS_PROFILE}" <<< "${ALL_PROFILES}"; then
+  echo "❌ Profile '${AWS_PROFILE}' not found or not usable."
+  #echo "💡 Available profiles:"
+  #echo "${ALL_PROFILES}" | sed 's/^/   - /'
+  echo -e "💡 Either configure a [default] profile with 'aws configure',"
+  echo -e "   Or specify an explicit profile using ${BLD}'-p <profile>'${NC}.\n"
+  exit 1
+fi
+
+# --- Attempt STS lookup ---
+ACCID=$(aws sts get-caller-identity \
+           --profile "${AWS_PROFILE}" \
+           --query "Account" --output text 2>/dev/null)
+
+if [[ -z "${ACCID}" || "${ACCID}" == "None" ]]; then
+  echo "⚠️  Unable to retrieve AWS account ID for profile '${AWS_PROFILE}'."
+  echo "💡 If this is an SSO profile, try logging in first:"
+  echo "   aws sso login --profile ${AWS_PROFILE}"
+  # Not exiting immediately — some profiles (SSO) may authenticate lazily
+else
+  : #echo "👤 Using AWS profile: ${AWS_PROFILE} (Account: ${ACCID})"
+fi
+
+# ==========================================================
+# 📤 Output parameters
+# ==========================================================
+[[ -z "${OUTDIR}" || "${OUTDIR}" == "./" ]] && \
+OUTDIR="./${ACCID}-outdir-$(date +%Y-%m-%d)"
+
+[[ -z "${OUTFILE}" ]] && \
+OUTFILE="./${ACCID}-aws-cost-audit-$(date +%Y%m%d).tgz"
+
 export AWS_PROFILE
 mkdir -p "${OUTDIR}"
 
-echo "👤 Using AWS profile: ${AWS_PROFILE}"
-echo "📁 Output directory: ${OUTDIR}"
-echo "📦 Archive name: ${OUTFILE}"
-echo "📊 Report-only mode: ${REPORT_ONLY}"
+echo "👤 Using AWS profile: ${AWS_PROFILE} (Account: ${ACCID})"
+echo "📁 Output directory : ${OUTDIR##*/}"
+echo "📦 Archive name     : ${OUTFILE##*/}"
+echo "📊 Report-only mode : ${REPORT_ONLY}"
 
 # --- Helper: cross-platform date ---
 if [[ $(uname -s) == 'Darwin' ]]; then
   echo "🍎 macOS detected — using BSD-compatible date options"
-  dt_1m='-v -1m'
+  dt_1m='-u -v -1m'
   dt_7d='-u -v -7d'
 elif [[ $(uname -s) == 'Linux' ]]; then
   echo "🐧 Linux detected — using GNU date options"
-  dt_1m='-d "30 days ago"'
+  dt_1m='-u -d "30 days ago"'
   dt_7d='-u -d "7 days ago"'
 else
   echo "💥 Unknown OS detected!"
@@ -197,9 +302,9 @@ else
   exit 1
 fi
 
-Start=$(eval date ${dt_1m} +%Y-%m-01)
-End=$(date +%Y-%m-01)
-echo "🗓️ Collecting data for period: ${Start} → ${End}"
+start_30d=$(eval date ${dt_1m} +%Y-%m-01)
+end_30d=$(date +%Y-%m-01)
+echo "🗓️ Collecting data for period: ${start_30d} → ${end_30d}"
 
 # ---- Helper: determine if section runs ---------------- ##
 run_sec() {
@@ -208,11 +313,11 @@ run_sec() {
   case "$1" in
     ec2) [[ "${RUN_EC2}" == true ]] && return 0 ;;
     rds) [[ "${RUN_RDS}" == true ]] && return 0 ;;
-    storage) [[ "$RUN_STORAGE" == true ]] && return 0 ;;
+    storage) [[ "${RUN_STORAGE}" == true ]] && return 0 ;;
     dns) [[ "${RUN_DNS}" == true ]] && return 0 ;;
     eip) [[ "${RUN_EIP}" == true ]] && return 0 ;;
     network) [[ "${RUN_NETWORK}" == true ]] && return 0 ;;
-    tags) [[ "${RUN_TAG}S" == true ]] && return 0 ;;
+    tags) [[ "${RUN_TAGS}" == true ]] && return 0 ;;
     cost) [[ "${RUN_COST}" == true ]] && return 0 ;;
     optimizer) [[ "${RUN_OPTIMIZER}" == true ]] && return 0 ;;
   esac
@@ -232,14 +337,14 @@ fi
 if run_sec cost; then
   echo "💰 Collecting cost summaries..."
   aws ce get-cost-and-usage \
-    --time-period Start=${Start},End=${End} \
+    --time-period Start=${start_30d},End=${end_30d} \
     --granularity MONTHLY \
     --metrics "UnblendedCost" \
     --group-by Type=DIMENSION,Key=SERVICE \
     --output json > "${OUTDIR}/cost-by-service.json"
 
   aws ce get-cost-and-usage \
-    --time-period Start=${Start},End=${End} \
+    --time-period Start=${start_30d},End=${end_30d} \
     --granularity MONTHLY \
     --metrics "UnblendedCost" \
     --group-by Type=DIMENSION,Key=REGION \
@@ -274,7 +379,7 @@ if run_sec ec2; then
       --end-time "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
       --period 3600 \
       --statistics Average \
-      --dimensions Name=InstanceId,Value=$i \
+      --dimensions Name=InstanceId,Value=${i} \
       --output json > "${OUTDIR}/cpu_${i}.json"
   done
 fi
@@ -303,10 +408,10 @@ if run_sec storage; then
   echo "📦 Collecting S3 bucket metrics (7-day average)..."
   while IFS= read -r b; do
     # Skip empty lines
-    [[ -z "$b" ]] && continue
-    echo "   → Checking bucket: $b"
+    [[ -z "${b}" ]] && continue
+    echo "   → Checking bucket: ${b}"
 
-    region=$(aws s3api get-bucket-location --bucket "$b" --query 'LocationConstraint' \
+    region=$(aws s3api get-bucket-location --bucket "${b}" --query 'LocationConstraint' \
                                            --output text 2>/dev/null || echo "unknown")
 
     # Fix legacy or null region cases
@@ -322,9 +427,9 @@ if run_sec storage; then
       --end-time "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
       --period 86400 \
       --statistics Average \
-      --dimensions Name=BucketName,Value="$b" Name=StorageType,Value=StandardStorage \
+      --dimensions Name=BucketName,Value="${b}" Name=StorageType,Value=StandardStorage \
       --region "${region}" \
-      --output json > "${OUTDIR}/s3-${b}-size.json" || echo "⚠️ Skipped $b (no metrics or access denied)"
+      --output json > "${OUTDIR}/s3-${b}-size.json" || echo "⚠️ Skipped ${b} (no metrics or access denied)"
   done < "${OUTDIR}/s3-buckets.txt"
 fi
 
@@ -346,11 +451,11 @@ if run_sec eks; then
   aws eks list-clusters --output text > "${OUTDIR}/eks-clusters.txt"
 
   while read -r c; do
-    aws eks describe-cluster --name "$c" --output json > "${OUTDIR}/eks-${c}.json"
-    aws eks list-nodegroups --cluster-name "$c" --output text > "${OUTDIR}/eks-${c}-nodegroups.txt"
+    aws eks describe-cluster --name "${c}" --output json > "${OUTDIR}/eks-${c}.json"
+    aws eks list-nodegroups --cluster-name "${c}" --output text > "${OUTDIR}/eks-${c}-nodegroups.txt"
 
     while read -r ng; do
-      aws eks describe-nodegroup --cluster-name "$c" --nodegroup-name "$ng" --output json > "${OUTDIR}/eks-${c}-${ng}.json"
+      aws eks describe-nodegroup --cluster-name "${c}" --nodegroup-name "${ng}" --output json > "${OUTDIR}/eks-${c}-${ng}.json"
     done < "${OUTDIR}/eks-${c}-nodegroups.txt"
   done < "${OUTDIR}/eks-clusters.txt"
 fi
@@ -423,7 +528,7 @@ fi
 # ==========================================================
 echo "📈 Generating summary report..."
 
-SUMMARY_CSV="${OUTDIR}/summary-report.csv"
+SUMMARY_CSV="${OUTDIR}/aws-summary-report.csv"
 echo "Metric,Value" > "${SUMMARY_CSV}"
 
 # --- Cost summary
@@ -445,51 +550,50 @@ echo "${TOP_SERVICES}" >> "${SUMMARY_CSV}"
 EC2_TOTAL=$(safe_jq '[.[] | select(.State=="running")] | length' "${OUTDIR}/ec2-instances.json")
 
 echo "" >> "${SUMMARY_CSV}"
-echo "EC2 Instances (running),$EC2_TOTAL" >> "${SUMMARY_CSV}"
+echo "EC2 Instances (running),${EC2_TOTAL}" >> "${SUMMARY_CSV}"
 
 # --- EBS unattached volumes
 EBS_UNATTACHED=$(safe_jq 'map(select((.InstanceId // null) == null)) | length' "${OUTDIR}/ebs-volumes.json")
-echo "Unattached EBS Volumes,$EBS_UNATTACHED" >> "${SUMMARY_CSV}"
+echo "Unattached EBS Volumes,${EBS_UNATTACHED}" >> "${SUMMARY_CSV}"
 
 # --- S3 buckets
 S3_BUCKETS=$(safe_count "${OUTDIR}/s3-buckets.txt" | xargs)
-echo "Total S3 Buckets,$S3_BUCKETS" >> "${SUMMARY_CSV}"
+echo "Total S3 Buckets,${S3_BUCKETS}" >> "${SUMMARY_CSV}"
 
 # --- EKS clusters
 EKS_COUNT=$(safe_count "${OUTDIR}/eks-clusters.txt" | xargs)
-echo "EKS Clusters,$EKS_COUNT" >> "${SUMMARY_CSV}"
+echo "EKS Clusters,${EKS_COUNT}" >> "${SUMMARY_CSV}"
 
 # --- Tag coverage
 TAG_COUNT=$(safe_jq '.ResourceTagMappingList | length' "${OUTDIR}/tags.json")
-echo "Tagged Resources,$TAG_COUNT" >> "${SUMMARY_CSV}"
+echo "Tagged Resources,${TAG_COUNT}" >> "${SUMMARY_CSV}"
 
 echo "" >> "${SUMMARY_CSV}"
-echo "Report generated: $(date)" >> "${SUMMARY_CSV##*/}"
+echo "Report generated: $(date)" >> "${SUMMARY_CSV}"
 
 ROUTE53_COST=$(safe_jq -r '.ResultsByTime[0].Total.UnblendedCost.Amount // 0' "${OUTDIR}/route53-cost.json" 2>/dev/null)
 EIP_COST=$(safe_jq -r '.ResultsByTime[0].Total.UnblendedCost.Amount // 0' "${OUTDIR}/eip-cost.json" 2>/dev/null)
 EIP_TOTAL=$(safe_jq '.Addresses | length' "${OUTDIR}/elastic-ips.json" 2>/dev/null)
 EIP_UNATTACHED=$(safe_jq '[.Addresses[] | select((.InstanceId == null) and (.NetworkInterfaceId == null) and (.AssociationId == null))] | length' "${OUTDIR}/elastic-ips.json" 2>/dev/null)
 
-if [[ "${REPORT_ONLY}" == true ]]; then
-  echo "📡 Route 53 monthly cost: (report mode - no new data)"
-  echo "🌐 Elastic IP monthly cost: (report mode - no new data)"
+if [[ "${RUN_ALL}" == true ]] || run_sec dns; then
+  echo "📡 Route 53 monthly cost: ${ROUTE53_COST} USD" | tee -a "${SUMMARY_CSV}"
+fi
+if [[ "${RUN_ALL}" == true ]] || run_sec eip; then
+  echo "🌐 Elastic IP monthly cost: ${EIP_COST} USD | Total: ${EIP_TOTAL} | Unattached: ${EIP_UNATTACHED}" | tee -a "${SUMMARY_CSV}"
 else
-  if [[ "${RUN_ALL}" == true ]] || run_sec dns; then
-    echo "📡 Route 53 monthly cost: ${ROUTE53_COST} USD" | tee -a "${SUMMARY_CSV}"
-  fi
-  if [[ "${RUN_ALL}" == true ]] || run_sec eip; then
-    echo "🌐 Elastic IP monthly cost: ${EIP_COST} USD  |  Total: ${EIP_TOTAL}  |  Unattached: ${EIP_UNATTACHED}" | tee -a "${SUMMARY_CSV}"
-  fi
+    :
 fi
 
 # ==========================================================
-# 📦 Final packaging (v4)
+# 🗃️ Final packaging (v4)
 # Creates the requested .tgz from OUTDIR contents
 # ==========================================================
-if [[ -n "${OUTFILE}" ]]; then
   echo "📦 Packaging results into: ${OUTFILE}"
-  tar -czf "${OUTFILE}" "${OUTDIR}" && mv "${OUTFILE}" "${OUTDIR}"/
-  echo "✅ Archive ready: ${OUTDIR##*/}/${OUTFILE}"
-fi
+  tar -czf "${OUTFILE}" "${OUTDIR}"
 
+  if [[ -f "${OUTFILE}" ]]; then
+    echo "✅ Archive ready: ${OUTFILE##*/}"
+  fi
+
+exit 0
