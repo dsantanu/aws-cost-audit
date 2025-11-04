@@ -5,7 +5,7 @@
 # ==========================================================
 # Name    : AWS Cost Audit
 # Author  : Santanu Das (@dsantanu) | License : MIT
-# Version : v4.3.0
+# Version : v4.3.1
 # Desc    : AWS cost auditing & FinOps toolkit
 # Supports:
 #   -p, --profile  AWS CLI profile
@@ -37,6 +37,8 @@ else
   RED=$(tput setaf 1)   # red
   GRN=$(tput setaf 2)   # green
   YLW=$(tput setaf 3)   # yellow
+  BLU=$(tput setaf 4)   # blue
+  MGN=$(tput setaf 5)   # magenta
   CYN=$(tput setaf 6)   # cyan
   BLD=$(tput bold)
   NC=$(tput sgr0)
@@ -97,6 +99,21 @@ safe_count() {
   fi
 }
 
+# --- Normalize region display across all resources
+normalized_region_display() {
+  local raw_region="$1"
+  local normalized
+
+  if [[ -z "${raw_region}" || "${raw_region}" == "null" ]]; then
+    normalized='No-Data'
+  elif [[ "${raw_region}" == *,* ]]; then
+    normalized='Multiple'
+  else
+    normalized="${raw_region}"
+  fi
+  echo "${normalized}"
+}
+
 # ==========================================================
 # 🛠️ Script  helper
 # ==========================================================
@@ -137,7 +154,6 @@ EOF
 # 🧠 Unified CLI Parser (v4)
 # ==========================================================
 
-##set -x
 # --- Defaults ---
 AWS_PROFILE="default"
 REPORT_ONLY=false
@@ -249,8 +265,6 @@ fi
 # --- Validate selected profile ---
 if ! grep -qw "${AWS_PROFILE}" <<< "${ALL_PROFILES}"; then
   echo "❌ Profile '${AWS_PROFILE}' not found or not usable."
-  #echo "💡 Available profiles:"
-  #echo "${ALL_PROFILES}" | sed 's/^/   - /'
   echo -e "💡 Either configure a [default] profile with 'aws configure',"
   echo -e "   Or specify an explicit profile using ${BLD}'-p <profile>'${NC}.\n"
   exit 1
@@ -439,8 +453,17 @@ fi
 if run_sec rds; then
   echo "🗄️ Collecting RDS data..."
   aws rds describe-db-instances \
-    --query "DBInstances[].[DBInstanceIdentifier,Engine,DBInstanceClass,AllocatedStorage,StorageType,MultiAZ,PubliclyAccessible,Status]" \
-    --output json > "${OUTDIR}/rds.json"
+    --query "DBInstances[].[
+      AllocatedStorage,
+      DBInstanceIdentifier,
+      Endpoint.Address,
+      Engine,DBInstanceClass,
+      MultiAZ,
+      PubliclyAccessible,
+      Status,
+      StorageType
+    ]" \
+    --output json > "${OUTDIR}/rds-instances.json"
 fi
 
 # ==========================================================
@@ -582,18 +605,117 @@ fi
 if [[ "${RUN_ALL}" == true ]] || run_sec eip; then
   echo "🌐 Elastic IP monthly cost: ${EIP_COST} USD | Total: ${EIP_TOTAL} | Unattached: ${EIP_UNATTACHED}" | tee -a "${SUMMARY_CSV}"
 else
-    :
+    : #do nothing
+fi
+
+# ==========================================================
+# 💸 Top 5 AWS Services by Cost (array-safe, region-aware)
+# ==========================================================
+
+# --- Input files ---
+COST_FILE="${OUTDIR}/cost-by-service.json"
+EC2_FILE="${OUTDIR}/ec2-instances.json"
+RDS_FILE="${OUTDIR}/rds-instances.json"
+S3_FILE="${OUTDIR}/s3-buckets.txt"
+
+if [[ -f "${COST_FILE}" ]]; then
+  echo ""
+  echo "💰 Top 5 AWS Services by 30-Day Spend:"
+  echo "--------------------------------------------------------------------------------"
+  printf "%-4s %-10s %14s %9s %10s %10s %12s\n" "Rank" "Service" "Spend (USD)" "%Total" "Resources" "Avg/Res" "Region(s)"
+  echo "--------------------------------------------------------------------------------"
+
+  # --- Total spend ---
+  total_sum=$(safe_jq -r '[.ResultsByTime[0].Groups[].Metrics.UnblendedCost.Amount | tonumber] | add' "${COST_FILE}")
+
+  # --- Extract and process top 5 dynamically ---
+  rank=1
+
+  safe_jq -r '.ResultsByTime[-1].Groups[] | [.Keys[0], (.Metrics.UnblendedCost.Amount | tonumber)] | @tsv' "${COST_FILE}" \
+    | LC_ALL=C sort -t$'\t' -k2,2nr \
+    | head -n 5 \
+    | while IFS=$'\t' read -r svc amt; do
+
+    [[ -z "${svc}" ]] && continue
+    pct=$(awk -v a="${amt}" -v t="${total_sum}" 'BEGIN{if(t>0) printf "%.1f", (a/t)*100; else print "0"}')
+
+    # --- Short names (macOS safe) ---
+    case "${svc}" in
+      *Elastic*Compute*Cloud*|*EC2* ) short_name="EC2";;
+      *Relational*Database*|*RDS* ) short_name="RDS";;
+      *Simple*Storage*Service*|*S3* ) short_name="S3";;
+      *Elastic*Container*|*ECS* ) short_name="ECS";;
+      *Elastic*Kubernetes*|*EKS* ) short_name="EKS";;
+      *Block*Store*|*EBS* ) short_name="EBS";;
+      *CloudFront* ) short_name="CFN";;
+      *WAF* ) short_name="WAF";;
+      *ElastiCache* ) short_name="CACHE";;
+      *Tax* ) short_name="TAX";;
+      * ) short_name=$(echo "${svc}" | awk '{print $1}') ;;
+    esac
+
+    count="-" ; avg="-" ; region_display="-"
+
+    case "${short_name}" in
+      EC2)
+        count=$(safe_jq 'length' "${EC2_FILE}")
+        aws_regions=$(safe_jq -r '[.[]
+          | .AZ
+          | select(type == "string" and length > 0)
+          | .[:-1]
+        ] | unique | join(",")' "${EC2_FILE}")
+        region_display=$(normalized_region_display "${aws_regions}")
+        ;;
+      RDS)
+        count=$(safe_jq 'length' "${RDS_FILE}")
+        aws_regions=$(safe_jq -r '[.[] | .[2]
+          | select(type == "string")
+          | match("\\.([a-z0-9-]+)\\.rds\\.amazonaws\\.com")
+          | .captures[0].string]
+          | unique
+          | join(",")' "${RDS_FILE}")
+        region_display=$(normalized_region_display "${aws_regions}")
+        ;;
+      S3)
+        [ -f "${S3_FILE}" ] && count=$(wc -l < "${S3_FILE}" | xargs) || count="-"
+        region_display="Global"
+        ;;
+    esac
+
+    [ -z "${region_display}" ] && region_display="-"
+    [[ "${region_display}" = "null" ]] && region_display="-"
+
+    # --- Avagare cost/service ---
+    if [[ "${count}" =~ ^[0-9]+$ && "${count}" -gt 0 ]]; then
+      avg=$(awk -v a="${amt}" -v c="${count}" 'BEGIN {printf "%.2f", a/c}')
+    fi
+
+    color="${NC}"
+    [ ${rank} -eq 1 ] && color="${RED}"
+    [ ${rank} -eq 2 ] && color="${MGN}"
+    [ ${rank} -eq 3 ] && color="${YLW}"
+    [ ${rank} -eq 4 ] && color="${CYN}"
+    [ ${rank} -eq 5 ] && color="${GRN}"
+
+    printf "%b%-4s %-10s %14.2f %9s %10s %10s %12s%b\n" \
+      "${color}" "${rank}." "${short_name}" "${amt}" "${pct}%" "${count}" "${avg}" "${region_display}" "${NC}"
+
+    rank=$((rank+1))
+  done
+  echo -e "--------------------------------------------------------------------------------\n"
+else
+  echo "${YLW}⚠️  No cost data available to generate Top 5 cost table.${NC}"
 fi
 
 # ==========================================================
 # 🗃️ Final packaging (v4)
 # Creates the requested .tgz from OUTDIR contents
 # ==========================================================
-  echo "📦 Packaging results into: ${OUTFILE}"
-  tar -czf "${OUTFILE}" "${OUTDIR}"
+echo "📦 Packaging results into: ${OUTFILE##*/}"
+tar -czf "${OUTFILE}" "${OUTDIR}"
 
-  if [[ -f "${OUTFILE}" ]]; then
-    echo "✅ Archive ready: ${OUTFILE##*/}"
-  fi
+if [[ -f "${OUTFILE}" ]]; then
+  echo "✅ Archive ready: ${OUTFILE##*/}"
+fi
 
 exit 0
