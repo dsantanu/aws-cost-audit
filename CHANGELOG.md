@@ -5,6 +5,18 @@ This project follows [Semantic Versioning](https://semver.org/) and maintains
 a single source of truth via `release.sh`.
 
 ---
+## v4.4.0 — 2025-11-05
+### ✨ New Features
+- Introduced `generate_top_services_report()` — a reusable, standalone function that dynamically generates a **colorized Top-N AWS Service Spend Table**.
+
+### Added
+- Added generate_top_services_report() to produce dynamic Top-N AWS spend table.
+- Introduced CSV export (top-services.csv) for cost breakdown and Excel use.
+- Added accurate region extraction for EC2 and RDS.
+- Unified table formatting across macOS and Linux.
+### Improved
+- service name normalization (EC2, RDS, S3, ELB, etc.)
+- Minor `safe_jq()` reliability and color rendering.
 
 ## v4.3.0 — 2025-11-04
 ### Highlights

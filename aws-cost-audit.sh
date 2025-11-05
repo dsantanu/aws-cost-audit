@@ -5,7 +5,7 @@
 # ==========================================================
 # Name    : AWS Cost Audit
 # Author  : Santanu Das (@dsantanu) | License : MIT
-# Version : v4.3.1
+# Version : v4.4.0
 # Desc    : AWS cost auditing & FinOps toolkit
 # Supports:
 #   -p, --profile  AWS CLI profile
@@ -67,15 +67,28 @@ safe_jq() {
   local file=""
   while [[ $# -gt 0 ]]; do
     if [[ -f "$1" ]]; then
-      file="$1"; shift; break
+      file="$1"
+      shift
+      break
     fi
-    jq_args+=("$1"); shift
+    jq_args+=("$1")
+    shift
   done
-  if [[ -n "${file}" ]]; then
-    jq "${jq_args[@]}" "${file}" || echo "0"
-  else
-    #echo "${YLW}⚠️  Missing file argument to safe_jq${NC}" >&2
+
+  if [[ -z "${file}" ]] || [[ ! -s "${file}" ]]; then
     echo "0"
+    return 0
+  fi
+
+  # Properly evaluate jq — and handle failure with empty output
+  local output
+  output=$(jq "${jq_args[@]}" "${file}" 2>/dev/null) || output="0"
+
+  # Return 0 if jq produced no valid output
+  if [[ -z "${output}" ]]; then
+    echo "0"
+  else
+    echo "${output}"
   fi
 }
 
@@ -342,6 +355,167 @@ if [[ "${REPORT_ONLY}" == true ]]; then
   echo "📈 Report-only: generating report from existing data..."
 fi
 
+# ==========================================================
+# 💰 Generate Top-N AWS Services by Spend (with CSV Export)
+# ----------------------------------------------------------
+# Usage:
+#   generate_top_services_report <outdir> [top_n]
+#
+# Example:
+#   generate_top_services_report "./outdir-2025-11-04" 6
+#
+# Outputs:
+#   - Prints colorized table to stdout
+#   - Writes CSV file to:  <outdir>/top-services.csv
+# ==========================================================
+generate_top_services_report() {
+
+  # --- Input files ---
+  local OUTDIR="${1:-.}"
+  local TOP_N="${2:-5}"
+  local COST_FILE="${OUTDIR}/cost-by-service.json"
+  local CSV_FILE="${OUTDIR}/top-services.csv"
+  local EC2_FILE="${OUTDIR}/ec2-instances.json"
+  local RDS_FILE="${OUTDIR}/rds-instances.json"
+  local S3_FILE="${OUTDIR}/s3-buckets.txt"
+
+  echo ""
+  echo "💰 Top ${TOP_N} AWS Services by 30-Day Spend:"
+  echo "--------------------------------------------------------------------------------"
+  printf "%-4s %-16s %-14s %-8s %-10s %-10s %-10s\n" \
+    "Rank" "Service" "Spend (USD)" "%Total" "Resources" "Avg/Res" "Region(s)"
+  echo "--------------------------------------------------------------------------------"
+
+  # --- Normalize & aggregate spend data ---
+  local SERVICE_DATA
+  SERVICE_DATA=$(
+    safe_jq -r '
+      (.ResultsByTime // []) as $rt
+      | if ($rt|length)==0 then empty else
+          $rt[-1].Groups[]?
+          | [
+              (.Keys[0]
+                | gsub("Amazon Elastic Compute Cloud - Compute"; "EC2")
+                | gsub("EC2 - Other"; "EC2")
+                | gsub("Amazon Relational Database Service"; "RDS")
+                | gsub("Amazon Simple Storage Service"; "S3")
+                | gsub("Amazon Elastic Container Service"; "ECS")
+                | gsub("Amazon Elastic Kubernetes Service"; "EKS")
+                | gsub("Amazon Elastic Load Balancing"; "ELB")
+                | gsub("Application Load Balancer"; "ALB")
+                | gsub("Network Load Balancer"; "NLB")
+                | gsub("AWS WAF"; "WAF")
+                | gsub("Amazon CloudFront"; "CFN")
+                | gsub("AWS Tax"; "TAX")
+                | gsub("Amazon ElastiCache"; "CACHE")
+                | gsub("Amazon CloudWatch"; "CW")
+                | gsub("AWS Lambda"; "LAMBDA")
+                | gsub("Amazon Route 53"; "R53")
+              ),
+              (.Metrics.UnblendedCost.Amount // "0" | tonumber)
+            ]
+          | @tsv
+        end
+    ' "${COST_FILE}" |
+    awk -F'\t' 'NF==2 && $1!="" { a[$1]+=$2 } END { for (k in a) printf "%s\t%.2f\n", k, a[k] }' |
+    LC_ALL=C sort -t$'\t' -k2,2nr |
+    head -n "${TOP_N}"
+  )
+
+  if [[ -z "${SERVICE_DATA}" ]]; then
+    echo "⚠️  No cost data available in ${COST_FILE}."
+    echo "--------------------------------------------------------------------------------"
+    return 0
+  fi
+
+  # --- Compute total for %Total -------
+  local TOTAL_SPEND
+  TOTAL_SPEND=$(echo "${SERVICE_DATA}" | awk -F'\t' '{sum+=$2} END{printf "%.2f", (sum==0?0:sum)}')
+
+  # --- CSV file setup -----------------
+  echo "Rank,Service,Spend_USD,Percent_Total,Resources,Avg_Per_Resource,Region" > "${CSV_FILE}"
+
+  # --- Loop & print each service ------
+  local rank=1
+  while IFS=$'\t' read -r svc amt; do
+    [[ -z "${svc}" || -z "${amt}" ]] && continue
+    local pct count avg raw_regions region color
+
+    pct=$(awk -v a="${amt}" -v t="${TOTAL_SPEND}" 'BEGIN{ if(t>0) printf "%.1f%%", (a/t*100); else print "0.0%"}')
+
+    case "${svc}" in
+      EC2)
+        count=$(safe_jq 'length' "${EC2_FILE}" 2>/dev/null)
+        raw_regions=$(safe_jq -r '[.[] | .AZ
+                        | select(type=="string" and length>0)
+                        | .[:-1]] | unique
+                        | join(",")' "${EC2_FILE}"
+                     )
+        ;;
+      RDS)
+        count=$(safe_jq 'length' "${RDS_FILE}" 2>/dev/null)
+        raw_regions=$(safe_jq -r '[.[] | .[2]
+                        | select(type=="string")
+                        | match("\\.([a-z0-9-]+)\\.rds\\.amazonaws\\.com")
+                        | .captures[0].string] | unique
+                        | join(",")' "${RDS_FILE}"
+                     )
+        ;;
+      S3)
+        if [[ -f "${OUTDIR}/s3-buckets.txt" ]]; then
+          count=$(wc -l < "${OUTDIR}/s3-buckets.txt" | xargs)
+        else
+          count=$(safe_jq 'length' "${OUTDIR}/s3-buckets.json" 2>/dev/null)
+        fi
+        raw_regions="Global"
+        ;;
+      ECS|EKS|ELB|ALB|NLB)
+        count="-"
+        raw_regions="Regional"
+        ;;
+      *)
+        count="-"
+        raw_regions="-"
+        ;;
+    esac
+
+    if [[ "${count}" != "-" && "${count}" -gt 0 ]]; then
+      avg=$(awk -v a="${amt}" -v c="${count}" 'BEGIN{printf "%.2f", a/c}')
+    else
+      avg="-"
+    fi
+
+    if [[ -z "${raw_regions}" || "${raw_regions}" == "null" ]]; then
+      region="No-Data"
+    elif [[ "${raw_regions}" == *","* ]]; then
+      region="Multiple"
+    else
+      region="${raw_regions}"
+    fi
+
+    case "${rank}" in
+      1) color="${RED}" ;;
+      2) color="${YLW}" ;;
+      3) color="${CYN}" ;;
+      *) color="${GRN}" ;;
+    esac
+
+    # --- Print row ---
+    printf "%b%-4s %-14s %-14.2f %-8s %-10s %-10s %-10s%b\n" \
+      "${color}" "${rank}." "${svc}" "${amt}" "${pct}" "${count}" "${avg}" "${region}" "${NC}"
+
+    # --- Write to CSV ---
+    printf "%s,%s,%.2f,%s,%s,%s,%s\n" \
+      "${rank}" "${svc}" "${amt}" "${pct}" "${count}" "${avg}" "${region}" >> "${CSV_FILE}"
+
+    ((rank++))
+  done <<< "${SERVICE_DATA}"
+
+  echo -e "--------------------------------------------------------------------------------\n"
+  echo -e "📦 CSV report saved to: ${CSV_FILE##./}"
+}
+
+
 ## ---- 📊 Collectors ----------------------------------- ##
 
 # ==========================================================
@@ -425,8 +599,10 @@ if run_sec storage; then
     [[ -z "${b}" ]] && continue
     echo "   → Checking bucket: ${b}"
 
-    region=$(aws s3api get-bucket-location --bucket "${b}" --query 'LocationConstraint' \
-                                           --output text 2>/dev/null || echo "unknown")
+    region=$(aws s3api get-bucket-location --bucket "${b}" \
+                                           --query 'LocationConstraint' \
+                                           --output text 2>/dev/null || echo 'Unknown'\
+            )
 
     # Fix legacy or null region cases
     case "${region}" in
@@ -474,11 +650,15 @@ if run_sec eks; then
   aws eks list-clusters --output text > "${OUTDIR}/eks-clusters.txt"
 
   while read -r c; do
-    aws eks describe-cluster --name "${c}" --output json > "${OUTDIR}/eks-${c}.json"
-    aws eks list-nodegroups --cluster-name "${c}" --output text > "${OUTDIR}/eks-${c}-nodegroups.txt"
+    aws eks describe-cluster --name "${c}" \
+                             --output json > "${OUTDIR}/eks-${c}.json"
+    aws eks list-nodegroups --cluster-name "${c}" \
+                            --output text > "${OUTDIR}/eks-${c}-nodegroups.txt"
 
     while read -r ng; do
-      aws eks describe-nodegroup --cluster-name "${c}" --nodegroup-name "${ng}" --output json > "${OUTDIR}/eks-${c}-${ng}.json"
+      aws eks describe-nodegroup --cluster-name "${c}" \
+                                 --nodegroup-name "${ng}" \
+                                 --output json > "${OUTDIR}/eks-${c}-${ng}.json"
     done < "${OUTDIR}/eks-${c}-nodegroups.txt"
   done < "${OUTDIR}/eks-clusters.txt"
 fi
@@ -609,113 +789,23 @@ else
 fi
 
 # ==========================================================
-# 💸 Top 5 AWS Services by Cost (array-safe, region-aware)
+# 💸 Top AWS Services by Cost (array-safe, region-aware)
 # ==========================================================
-
-# --- Input files ---
-COST_FILE="${OUTDIR}/cost-by-service.json"
-EC2_FILE="${OUTDIR}/ec2-instances.json"
-RDS_FILE="${OUTDIR}/rds-instances.json"
-S3_FILE="${OUTDIR}/s3-buckets.txt"
-
-if [[ -f "${COST_FILE}" ]]; then
-  echo ""
-  echo "💰 Top 5 AWS Services by 30-Day Spend:"
-  echo "--------------------------------------------------------------------------------"
-  printf "%-4s %-10s %14s %9s %10s %10s %12s\n" "Rank" "Service" "Spend (USD)" "%Total" "Resources" "Avg/Res" "Region(s)"
-  echo "--------------------------------------------------------------------------------"
-
-  # --- Total spend ---
-  total_sum=$(safe_jq -r '[.ResultsByTime[0].Groups[].Metrics.UnblendedCost.Amount | tonumber] | add' "${COST_FILE}")
-
-  # --- Extract and process top 5 dynamically ---
-  rank=1
-
-  safe_jq -r '.ResultsByTime[-1].Groups[] | [.Keys[0], (.Metrics.UnblendedCost.Amount | tonumber)] | @tsv' "${COST_FILE}" \
-    | LC_ALL=C sort -t$'\t' -k2,2nr \
-    | head -n 5 \
-    | while IFS=$'\t' read -r svc amt; do
-
-    [[ -z "${svc}" ]] && continue
-    pct=$(awk -v a="${amt}" -v t="${total_sum}" 'BEGIN{if(t>0) printf "%.1f", (a/t)*100; else print "0"}')
-
-    # --- Short names (macOS safe) ---
-    case "${svc}" in
-      *Elastic*Compute*Cloud*|*EC2* ) short_name="EC2";;
-      *Relational*Database*|*RDS* ) short_name="RDS";;
-      *Simple*Storage*Service*|*S3* ) short_name="S3";;
-      *Elastic*Container*|*ECS* ) short_name="ECS";;
-      *Elastic*Kubernetes*|*EKS* ) short_name="EKS";;
-      *Block*Store*|*EBS* ) short_name="EBS";;
-      *CloudFront* ) short_name="CFN";;
-      *WAF* ) short_name="WAF";;
-      *ElastiCache* ) short_name="CACHE";;
-      *Tax* ) short_name="TAX";;
-      * ) short_name=$(echo "${svc}" | awk '{print $1}') ;;
-    esac
-
-    count="-" ; avg="-" ; region_display="-"
-
-    case "${short_name}" in
-      EC2)
-        count=$(safe_jq 'length' "${EC2_FILE}")
-        aws_regions=$(safe_jq -r '[.[]
-          | .AZ
-          | select(type == "string" and length > 0)
-          | .[:-1]
-        ] | unique | join(",")' "${EC2_FILE}")
-        region_display=$(normalized_region_display "${aws_regions}")
-        ;;
-      RDS)
-        count=$(safe_jq 'length' "${RDS_FILE}")
-        aws_regions=$(safe_jq -r '[.[] | .[2]
-          | select(type == "string")
-          | match("\\.([a-z0-9-]+)\\.rds\\.amazonaws\\.com")
-          | .captures[0].string]
-          | unique
-          | join(",")' "${RDS_FILE}")
-        region_display=$(normalized_region_display "${aws_regions}")
-        ;;
-      S3)
-        [ -f "${S3_FILE}" ] && count=$(wc -l < "${S3_FILE}" | xargs) || count="-"
-        region_display="Global"
-        ;;
-    esac
-
-    [ -z "${region_display}" ] && region_display="-"
-    [[ "${region_display}" = "null" ]] && region_display="-"
-
-    # --- Avagare cost/service ---
-    if [[ "${count}" =~ ^[0-9]+$ && "${count}" -gt 0 ]]; then
-      avg=$(awk -v a="${amt}" -v c="${count}" 'BEGIN {printf "%.2f", a/c}')
-    fi
-
-    color="${NC}"
-    [ ${rank} -eq 1 ] && color="${RED}"
-    [ ${rank} -eq 2 ] && color="${MGN}"
-    [ ${rank} -eq 3 ] && color="${YLW}"
-    [ ${rank} -eq 4 ] && color="${CYN}"
-    [ ${rank} -eq 5 ] && color="${GRN}"
-
-    printf "%b%-4s %-10s %14.2f %9s %10s %10s %12s%b\n" \
-      "${color}" "${rank}." "${short_name}" "${amt}" "${pct}%" "${count}" "${avg}" "${region_display}" "${NC}"
-
-    rank=$((rank+1))
-  done
-  echo -e "--------------------------------------------------------------------------------\n"
+if [[ -f "${OUTDIR}/cost-by-service.json" ]]; then
+  generate_top_services_report "${OUTDIR}"
 else
-  echo "${YLW}⚠️  No cost data available to generate Top 5 cost table.${NC}"
+  echo "${YLW}⚠️  No cost data available to generate Top-N cost table.${NC}"
 fi
 
 # ==========================================================
 # 🗃️ Final packaging (v4)
 # Creates the requested .tgz from OUTDIR contents
 # ==========================================================
-echo "📦 Packaging results into: ${OUTFILE##*/}"
+#echo "📦 Packaging results into: ${OUTFILE##*/}"
 tar -czf "${OUTFILE}" "${OUTDIR}"
 
 if [[ -f "${OUTFILE}" ]]; then
-  echo "✅ Archive ready: ${OUTFILE##*/}"
+  echo -e "✅ Archive saved as: ${OUTFILE##*/}\n"
 fi
 
 exit 0
