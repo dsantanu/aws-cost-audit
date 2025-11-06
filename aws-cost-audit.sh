@@ -5,7 +5,7 @@
 # ==========================================================
 # Name    : AWS Cost Audit
 # Author  : Santanu Das (@dsantanu) | License : MIT
-# Version : v4.5.0
+# Version : v4.6.0
 # Desc    : AWS cost auditing & FinOps toolkit
 # Supports:
 #   -p, --profile  AWS CLI profile
@@ -141,7 +141,11 @@ ${BLD}General options:${NC}
   ${GRN}-o, --out <file>${NC}       Output tar.gz filename
                          default: aws-cost-audit-YYYYMMDD.tgz
   ${GRN}-d, --dest <dir>${NC}       Output directory (default: ./)
-  ${GRN}-r, --report${NC}           Only run the report generation step (skip collectors)
+  ${GRN}-r, --report${NC}           Generate executive FinOps report
+  ${GRN}-s, --summary${NC}          Generate only text/JSON summary report
+                         (Ignotes all other collector options)
+  ${GRN}-u, --author${NC}           Name of the report generator
+  ${GRN}-z, --org${NC}              Name of the Organization
   ${GRN}-h, --help${NC}             Show this help message
 
 ${BLD}Selective collectors:${NC}
@@ -169,10 +173,15 @@ EOF
 
 # --- Defaults ---
 AWS_PROFILE="default"
-REPORT_ONLY=false
+SUMMARY_ONLY=false
+GEN_REPORT=false
 ACCID=''
 OUTDIR=''
 OUTFILE=''
+DOCXFILE=''
+
+ORG_NAME="${ORG_NAME:-AWS Cost Optimization Report}"
+AUTHOR_NAME="${AUTHOR_NAME:-Cloud Architecture}"
 
 RUN_ALL=true
 RUN_EC2=false
@@ -216,7 +225,23 @@ while [[ $# -gt 0 ]]; do
         exit 1
       fi
       ;;
-    -r|--report)  REPORT_ONLY=true; RUN_ALL=false; shift;;
+    -r|--report)
+      GEN_REPORT=true
+      shift
+      ;;
+    -s|--summary)
+      SUMMARY_ONLY=true
+      RUN_ALL=false
+      shift
+      ;;
+    -u|--author)
+      AUTHOR_NAME="$2"
+      shift 2
+      ;;
+    -z|--org)
+      ORG_NAME="$2"
+      shift 2
+      ;;
     -h|--help)    show_help; exit 0;;
 
     # === collector flags ===
@@ -306,13 +331,18 @@ OUTDIR="./${ACCID}-outdir-$(date +%Y-%m-%d)"
 [[ -z "${OUTFILE}" ]] && \
 OUTFILE="./${ACCID}-aws-cost-audit-$(date +%Y%m%d).tgz"
 
+set -x
+[[ -z "${DOCXFILE}" && "${GEN_REPORT}" == 'true' ]] && \
+    DOCXFILE="./AWS-Audit-Report-(${ACCID})-$(date +%Y%m%d).docx"
+set +x
+
 export AWS_PROFILE
 mkdir -p "${OUTDIR}"
 
-echo "👤 Using AWS profile: ${AWS_PROFILE} (Account: ${ACCID})"
-echo "📁 Output directory : ${OUTDIR##*/}"
-echo "📦 Archive name     : ${OUTFILE##*/}"
-echo "📊 Report-only mode : ${REPORT_ONLY}"
+echo "👤 AWS Acc Profile   : ${AWS_PROFILE} (Account: ${ACCID})"
+echo "📁 Output directory  : ${OUTDIR##*/}"
+echo "📦 Archive name      : ${OUTFILE##*/}"
+echo "📊 Summary-only mode : ${SUMMARY_ONLY}"
 
 # --- Helper: cross-platform date ---
 if [[ $(uname -s) == 'Darwin' ]]; then
@@ -335,7 +365,7 @@ echo "🗓️ Collecting data for period: ${start_30d} → ${end_30d}"
 
 # ---- Helper: determine if section runs ---------------- ##
 run_sec() {
-  [[ "${REPORT_ONLY}" == true ]] && return 1
+  [[ "${SUMMARY_ONLY}" == true ]] && return 1
   [[ "${RUN_ALL}" == true ]] && return 0
   case "$1" in
     ec2) [[ "${RUN_EC2}" == true ]] && return 0 ;;
@@ -351,8 +381,8 @@ run_sec() {
   return 1
 }
 
-if [[ "${REPORT_ONLY}" == true ]]; then
-  echo "📈 Report-only: generating report from existing data..."
+if [[ "${SUMMARY_ONLY}" == true ]]; then
+  echo "📈 Summary-only: generating report from existing data..."
 fi
 
 # ==========================================================
@@ -796,6 +826,31 @@ if [[ -f "${OUTDIR}/cost-by-service.json" ]]; then
 else
   echo "${YLW}⚠️  No cost data available to generate Top-N cost table.${NC}"
 fi
+
+# ==========================================================
+# Generate DOCX report if requested
+# ==========================================================
+if [[ "${GEN_REPORT}" == "true" ]]; then
+  REPORT_SCRIPT="$(dirname "$0")/aws_cost_reporter.py"
+  OUTPUT_DIR="${OUTDIR}"
+  REPORT_FILE="${OUTDIR}/${DOCXFILE}"
+  INCLUDE_CHARTS=''
+
+  set -x
+  echo "ℹ️ Generating DOCX report..."
+  if [[ -f "${REPORT_SCRIPT}" ]]; then
+    python3 "${REPORT_SCRIPT}" \
+      --input "${OUTPUT_DIR}" \
+      --output "${REPORT_FILE}" \
+      ${INCLUDE_CHARTS:---charts} \
+      --org "${ORG_NAME}" \
+      --author "${AUTHOR_NAME}"
+    echo "✅ Report generated: ${REPORT_FILE##./}"
+  else
+    echo "${YLW}⚠️  Reporter script: ${REPORT_SCRIPT} NOT found!!${NC}"
+  fi
+fi
+set +x
 
 # ==========================================================
 # 🗃️ Final packaging (v4)

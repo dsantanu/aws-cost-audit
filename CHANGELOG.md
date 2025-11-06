@@ -6,9 +6,21 @@ a single source of truth via `release.sh`.
 
 ---
 
+## v4.6.0 — 2025-11-06
+- Released v1.1.0 of `aws_cost_reporter.py`
+- Replaced `-r|--report` by `-s|-summary` without any change in funcinility.
+### ✨ Added
+- `-r|--report` to generate executive FinOps report at the end.
+- `-u|--author` to provid name of the report generator (as `Author`).
+- `-z|--org` to provide name of organization to generator the report for.
+### Fixed
+- EBS - Series-to-int conversion bug when counting unattached volumes.
+- R53 - Unified dictionary output to prevent unpacking errors.
+- Code resilience against missing or malformed JSON data.
+
 ## v4.5.0 — 2025-11-06
 ### ✨ Added
-- aws_cost_reporter.py — new standalone DOCX report generator for AWS Cost Audit outputs.
+- `aws_cost_reporter.py` — new standalone DOCX report generator for AWS Cost Audit outputs.
   - Produces a full executive report, (Key Insights → Summary → Analysis → Remediation Plan).
 - Invoked independently, using `--input` and `--output` parameters.
 - Supports embedding cost and savings charts using `--charts`.
