@@ -2,7 +2,7 @@
 # 🧾 AWS Cost Audit Script
 # ============================================================
 # Name    : AWS Cost Audit
-# Version : v4.4.0
+# Version : v4.5.0
 # Author  : Santanu Das (@dsantanu) | License : MIT
 # Desc    : AWS cost auditing & FinOps usage analysis toolkit
 # Purpose : To collect AWS cost auditing & usage data for

@@ -5,9 +5,19 @@ This project follows [Semantic Versioning](https://semver.org/) and maintains
 a single source of truth via `release.sh`.
 
 ---
+
+## v4.5.0 — 2025-11-06
+### ✨ Added
+- aws_cost_reporter.py — new standalone DOCX report generator for AWS Cost Audit outputs.
+  - Produces a full executive report, (Key Insights → Summary → Analysis → Remediation Plan).
+
+Supports embedding cost and savings charts with --charts.
+- Invoked independently, using `--input` and `--output` parameters.
+
 ## v4.4.0 — 2025-11-05
 ### ✨ New Features
-- Introduced `generate_top_services_report()` — a reusable, standalone function that dynamically generates a **colorized Top-N AWS Service Spend Table**.
+- Introduced `generate_top_services_report()`
+  — a reusable, standalone function that dynamically generates a **colorized Top-N AWS Service Spend Table**.
 
 ### Added
 - Added generate_top_services_report() to produce dynamic Top-N AWS spend table.

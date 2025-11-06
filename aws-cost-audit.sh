@@ -5,7 +5,7 @@
 # ==========================================================
 # Name    : AWS Cost Audit
 # Author  : Santanu Das (@dsantanu) | License : MIT
-# Version : v4.4.0
+# Version : v4.5.0
 # Desc    : AWS cost auditing & FinOps toolkit
 # Supports:
 #   -p, --profile  AWS CLI profile
