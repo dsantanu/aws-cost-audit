@@ -6,6 +6,10 @@ a single source of truth via `release.sh`.
 
 ---
 
+## v4.6.1 — 2025-11-07
+- Removed `()` from DOCX output file name.
+- Cleared up some leftover from STDOUT.
+
 ## v4.6.0 — 2025-11-06
 - Released v1.1.0 of `aws_cost_reporter.py`
 - Replaced `-r|--report` by `-s|-summary` without any change in funcinility.

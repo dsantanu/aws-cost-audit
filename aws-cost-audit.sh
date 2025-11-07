@@ -5,7 +5,7 @@
 # ==========================================================
 # Name    : AWS Cost Audit
 # Author  : Santanu Das (@dsantanu) | License : MIT
-# Version : v4.6.0
+# Version : v4.6.1
 # Desc    : AWS cost auditing & FinOps toolkit
 # Supports:
 #   -p, --profile  AWS CLI profile
@@ -331,10 +331,8 @@ OUTDIR="./${ACCID}-outdir-$(date +%Y-%m-%d)"
 [[ -z "${OUTFILE}" ]] && \
 OUTFILE="./${ACCID}-aws-cost-audit-$(date +%Y%m%d).tgz"
 
-set -x
 [[ -z "${DOCXFILE}" && "${GEN_REPORT}" == 'true' ]] && \
-    DOCXFILE="./AWS-Audit-Report-(${ACCID})-$(date +%Y%m%d).docx"
-set +x
+    DOCXFILE="./AWS-Audit-Report-${ACCID}-$(date +%Y%m%d).docx"
 
 export AWS_PROFILE
 mkdir -p "${OUTDIR}"
@@ -836,7 +834,6 @@ if [[ "${GEN_REPORT}" == "true" ]]; then
   REPORT_FILE="${OUTDIR}/${DOCXFILE}"
   INCLUDE_CHARTS=''
 
-  set -x
   echo "ℹ️ Generating DOCX report..."
   if [[ -f "${REPORT_SCRIPT}" ]]; then
     python3 "${REPORT_SCRIPT}" \
@@ -850,7 +847,6 @@ if [[ "${GEN_REPORT}" == "true" ]]; then
     echo "${YLW}⚠️  Reporter script: ${REPORT_SCRIPT} NOT found!!${NC}"
   fi
 fi
-set +x
 
 # ==========================================================
 # 🗃️ Final packaging (v4)
